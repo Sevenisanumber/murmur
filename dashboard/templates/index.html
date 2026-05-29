@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="300">
+  <title>WSB Signal Lab</title>
+  <style>
+    /* ── reset & variables ─────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:      #0d1117;
+      --panel:   #161b22;
+      --border:  #30363d;
+      --text:    #c9d1d9;
+      --head:    #f0f6fc;
+      --muted:   #8b949e;
+      --green:   #3fb950;
+      --red:     #f85149;
+      --blue:    #58a6ff;
+      --mono:    'SF Mono', 'Consolas', 'Liberation Mono', monospace;
+    }
+
+    /* ── base ──────────────────────────────────────────────────── */
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    /* ── header ─────────────────────────────────────────────────── */
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 14px 24px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+    .logo { font-size: 16px; font-weight: 700; color: var(--head); letter-spacing: -0.02em; }
+    .logo span { color: var(--green); }
+    .meta { font-size: 12px; color: var(--muted); }
+
+    /* ── sections ───────────────────────────────────────────────── */
+    section { padding: 20px 24px; border-bottom: 1px solid var(--border); }
+
+    .section-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 14px;
+    }
+    .section-title em {
+      font-style: normal;
+      font-weight: 400;
+      color: var(--text);
+      margin-left: 8px;
+      text-transform: none;
+      letter-spacing: 0;
+    }
+
+    /* ── tables ─────────────────────────────────────────────────── */
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    thead th {
+      text-align: left;
+      padding: 6px 12px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    thead th.r { text-align: right; }
+    tbody td {
+      padding: 8px 12px;
+      border-bottom: 1px solid rgba(48,54,61,0.5);
+      vertical-align: middle;
+    }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover td { background: rgba(48,54,61,0.3); }
+    td.r { text-align: right; }
+
+    /* ── ticker chip ─────────────────────────────────────────────── */
+    .ticker {
+      font-family: var(--mono);
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--blue);
+      letter-spacing: 0.02em;
+    }
+
+    /* ── numbers ─────────────────────────────────────────────────── */
+    .num {
+      font-family: var(--mono);
+      font-size: 13px;
+    }
+
+    /* ── return coloring ─────────────────────────────────────────── */
+    .pos { color: var(--green); }
+    .neg { color: var(--red); }
+    .na  { color: var(--muted); }
+
+    /* ── date separator rows ─────────────────────────────────────── */
+    tr.date-sep td {
+      background: rgba(22,27,34,0.8);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      padding: 5px 12px;
+      border-top: 1px solid var(--border);
+    }
+
+    /* ── stat cards ──────────────────────────────────────────────── */
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    .stat {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 14px 16px;
+    }
+    .stat-label {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 6px;
+    }
+    .stat-value {
+      font-family: var(--mono);
+      font-size: 22px;
+      font-weight: 600;
+      color: var(--head);
+    }
+    .stat-value.ok  { color: var(--green); }
+    .stat-value.err { color: var(--red); }
+
+    /* ── status badges ───────────────────────────────────────────── */
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .badge-success { background: rgba(63,185,80,0.15); color: var(--green); }
+    .badge-failure { background: rgba(248,81,73,0.15); color: var(--red); }
+    .badge-running { background: rgba(88,166,255,0.15); color: var(--blue); }
+
+    /* ── empty state ─────────────────────────────────────────────── */
+    .empty {
+      padding: 24px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    /* ── error banner ────────────────────────────────────────────── */
+    .error-banner {
+      background: rgba(248,81,73,0.1);
+      border: 1px solid rgba(248,81,73,0.3);
+      border-radius: 6px;
+      padding: 10px 14px;
+      margin-bottom: 16px;
+      color: var(--red);
+      font-size: 13px;
+    }
+
+    /* ── responsive ──────────────────────────────────────────────── */
+    @media (max-width: 600px) {
+      header, section { padding: 12px 14px; }
+      thead th, tbody td { padding: 6px 8px; }
+      .stat-value { font-size: 18px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══ HEADER ═══════════════════════════════════════════════════════════════ -->
+<header>
+  <div class="logo">WSB <span>Signal Lab</span></div>
+  <div class="meta">Updated {{ generated_at }}</div>
+</header>
+
+<!-- ═══ PULSE ════════════════════════════════════════════════════════════════ -->
+<section id="pulse">
+  <div class="section-title">
+    Pulse
+    <em>Most Recent 24h · {{ latest_date }}</em>
+  </div>
+
+  {% if pulse %}
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Ticker</th>
+        <th class="r">Mentions</th>
+        <th class="r">Avg Score</th>
+        <th class="r">Price</th>
+        <th class="r">1D Change</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in pulse %}
+      <tr>
+        <td><span class="ticker">{{ t.ticker }}</span></td>
+        <td class="r num">{{ t.mentions }}</td>
+        <td class="r num">{{ t.avg_score | comma }}</td>
+        <td class="r num">{{ t.price | price }}</td>
+        <td class="r num">
+          {% set chg = t.change | pct %}
+          {% if chg is none %}
+            <span class="na">—</span>
+          {% elif t.change > 0 %}
+            <span class="pos">{{ chg }}%</span>
+          {% elif t.change < 0 %}
+            <span class="neg">{{ chg }}%</span>
+          {% else %}
+            <span class="na">{{ chg }}%</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="empty">No ticker mentions found for this period.</div>
+  {% endif %}
+</section>
+
+<!-- ═══ SIGNAL HISTORY ═══════════════════════════════════════════════════════ -->
+<section id="history">
+  <div class="section-title">
+    Signal History
+    <em>Last 30 Days · ≥2 mentions per ticker per day</em>
+  </div>
+
+  {% if history %}
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Ticker</th>
+        <th class="r">Mentions</th>
+        <th class="r">1D Return</th>
+        <th class="r">7D Return</th>
+        <th class="r">30D Return</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% set ns = namespace(cur_date='') %}
+      {% for row in history %}
+        {% if row.post_date != ns.cur_date %}
+          {% set ns.cur_date = row.post_date %}
+          <tr class="date-sep">
+            <td colspan="6">{{ row.post_date }}</td>
+          </tr>
+        {% endif %}
+        <tr>
+          <td class="num na">{{ row.post_date }}</td>
+          <td><span class="ticker">{{ row.ticker }}</span></td>
+          <td class="r num">{{ row.mentions }}</td>
+
+          {# 1D return #}
+          <td class="r num">
+            {% set v = row.avg_1d | pct %}
+            {% if v is none %}<span class="na">—</span>
+            {% elif row.avg_1d > 0 %}<span class="pos">{{ v }}%</span>
+            {% elif row.avg_1d < 0 %}<span class="neg">{{ v }}%</span>
+            {% else %}<span class="na">{{ v }}%</span>{% endif %}
+          </td>
+
+          {# 7D return #}
+          <td class="r num">
+            {% set v = row.avg_7d | pct %}
+            {% if v is none %}<span class="na">—</span>
+            {% elif row.avg_7d > 0 %}<span class="pos">{{ v }}%</span>
+            {% elif row.avg_7d < 0 %}<span class="neg">{{ v }}%</span>
+            {% else %}<span class="na">{{ v }}%</span>{% endif %}
+          </td>
+
+          {# 30D return #}
+          <td class="r num">
+            {% set v = row.avg_30d | pct %}
+            {% if v is none %}<span class="na">—</span>
+            {% elif row.avg_30d > 0 %}<span class="pos">{{ v }}%</span>
+            {% elif row.avg_30d < 0 %}<span class="neg">{{ v }}%</span>
+            {% else %}<span class="na">{{ v }}%</span>{% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="empty">No signal history with price data found.</div>
+  {% endif %}
+</section>
+
+<!-- ═══ DATA HEALTH ═══════════════════════════════════════════════════════════ -->
+<section id="health">
+  <div class="section-title">Data Health</div>
+
+  {% if recent_errors > 0 %}
+  <div class="error-banner">
+    ⚠ {{ recent_errors }} scrape failure{{ 's' if recent_errors != 1 }} in the last 24 hours — check logs.
+  </div>
+  {% endif %}
+
+  <div class="stats">
+    <div class="stat">
+      <div class="stat-label">Total Posts</div>
+      <div class="stat-value">{{ total_posts | comma }}</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Tickers Tracked</div>
+      <div class="stat-value">{{ total_tickers | comma }}</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Dataset Through</div>
+      <div class="stat-value" style="font-size:15px; padding-top:4px;">{{ latest_date }}</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Recent Errors</div>
+      <div class="stat-value {% if recent_errors > 0 %}err{% else %}ok{% endif %}">
+        {{ recent_errors }}
+      </div>
+    </div>
+  </div>
+
+  {% if scrape_runs %}
+  <div class="section-title" style="margin-bottom:10px;">Recent Scrape Runs</div>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Script</th>
+        <th>Started</th>
+        <th>Duration</th>
+        <th class="r">Rows</th>
+        <th>Status</th>
+        <th>Errors</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for run in scrape_runs %}
+      <tr>
+        <td class="num" style="color:var(--blue);">{{ run.script or '—' }}</td>
+        <td class="num">{{ run.started_at | ts }}</td>
+        <td class="num na">
+          {%- if run.finished_at and run.started_at -%}
+            {%- set secs = run.finished_at - run.started_at -%}
+            {%- if secs >= 60 -%}{{ (secs // 60) }}m {{ (secs % 60) }}s
+            {%- else -%}{{ secs }}s{%- endif -%}
+          {%- else -%}—{%- endif -%}
+        </td>
+        <td class="r num">{{ run.posts_fetched | comma }}</td>
+        <td>
+          <span class="badge badge-{{ run.status }}">{{ run.status }}</span>
+        </td>
+        <td class="na" style="max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px;">
+          {{ run.errors or '—' }}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="empty">No scrape runs recorded yet.</div>
+  {% endif %}
+</section>
+
+</body>
+</html>

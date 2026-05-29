@@ -1,0 +1,17 @@
+[Unit]
+Description=WSB Signal Lab Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=plex
+WorkingDirectory=/home/plex/wsb-signal-lab
+ExecStart=/home/plex/wsb-signal-lab/venv/bin/python dashboard/app.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/plex/wsb-signal-lab/logs/dashboard.log
+StandardError=append:/home/plex/wsb-signal-lab/logs/dashboard.log
+Environment=DASHBOARD_PORT=5001
+
+[Install]
+WantedBy=multi-user.target

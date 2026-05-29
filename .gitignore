@@ -1,0 +1,27 @@
+# Credentials — never commit
+.env
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Database
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
+# Logs
+logs/
+
+# Large data files (Kaggle CSVs, etc.)
+*.csv
+*.parquet
+
+# macOS
+.DS_Store
+
+# Editor / tooling
+.claude/
+*.swp
