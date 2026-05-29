@@ -244,6 +244,41 @@
   {% endif %}
 </section>
 
+<!-- ═══ TODAY'S TOP TICKERS ══════════════════════════════════════════════════ -->
+<section id="daily">
+  <div class="section-title">
+    Today's Top Tickers
+    <em>Live Mentions{% if dm_date %} · {{ dm_date }}{% endif %}</em>
+  </div>
+
+  {% if daily_top %}
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Ticker</th>
+        <th class="r">Total Mentions</th>
+        <th>Subreddit Breakdown</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in daily_top %}
+      <tr>
+        <td class="num na">{{ loop.index }}</td>
+        <td><span class="ticker">{{ t.ticker }}</span></td>
+        <td class="r num">{{ t.total | comma }}</td>
+        <td class="na" style="font-size:12px;">{{ t.sources }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="empty">No daily mention data yet — run scrapers/fetch_daily_mentions.py to populate.</div>
+  {% endif %}
+</section>
+
 <!-- ═══ SIGNAL HISTORY ═══════════════════════════════════════════════════════ -->
 <section id="history">
   <div class="section-title">

@@ -86,6 +86,17 @@ def init_db(db_path=DB_PATH):
         );
 
         CREATE INDEX IF NOT EXISTS idx_prices_ticker ON prices(ticker);
+
+        CREATE TABLE IF NOT EXISTS daily_mentions (
+            ticker        TEXT NOT NULL,
+            date          TEXT NOT NULL,   -- YYYY-MM-DD
+            mention_count INTEGER NOT NULL DEFAULT 0,
+            subreddit     TEXT NOT NULL,
+            PRIMARY KEY (ticker, date, subreddit)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_dm_date    ON daily_mentions(date);
+        CREATE INDEX IF NOT EXISTS idx_dm_ticker  ON daily_mentions(ticker);
     """)
 
     conn.commit()

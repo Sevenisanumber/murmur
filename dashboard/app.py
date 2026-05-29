@@ -126,6 +126,24 @@ def index():
          LIMIT 200
     ''', {'cutoff': cutoff_30d}).fetchall()
 
+    # ── today's top tickers from daily_mentions ───────────────────────────────
+    dm_date_row = conn.execute('SELECT MAX(date) FROM daily_mentions').fetchone()
+    dm_date     = dm_date_row[0] if dm_date_row and dm_date_row[0] else None
+
+    daily_top = []
+    if dm_date:
+        daily_top_raw = conn.execute('''
+            SELECT ticker,
+                   SUM(mention_count)                                    AS total,
+                   GROUP_CONCAT(subreddit || ':' || mention_count, ', ') AS sources
+              FROM daily_mentions
+             WHERE date = ?
+             GROUP BY ticker
+             ORDER BY total DESC
+             LIMIT 20
+        ''', (dm_date,)).fetchall()
+        daily_top = [dict(r) for r in daily_top_raw]
+
     # ── data health ───────────────────────────────────────────────────────────
     scrape_runs = conn.execute('''
         SELECT run_id, started_at, finished_at, posts_fetched, errors, status, script
@@ -150,6 +168,8 @@ def index():
         latest_date   = latest_date,
         pulse         = pulse,
         history       = history,
+        daily_top     = daily_top,
+        dm_date       = dm_date,
         scrape_runs   = scrape_runs,
         total_posts   = total_posts,
         total_tickers = total_tickers,

@@ -48,7 +48,7 @@ COLUMN_ALIASES = {
     'upvote_ratio': ['upvote_ratio', 'upvote ratio'],
     'num_comments': ['num_comments', 'comms_num', 'comments', 'Comments', 'num comments'],
     'created_utc':  ['created_utc', 'created', 'timestamp', 'Date', 'date', 'created_at'],
-    'url':          ['url', 'Url', 'URL', 'permalink'],
+    'url':          ['url', 'Url', 'URL', 'permalink', 'full_link'],
     'flair':        ['link_flair_text', 'flair', 'Flair', 'category'],
     'is_self':      ['is_self', 'is self'],
 }

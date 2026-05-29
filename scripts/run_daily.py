@@ -91,14 +91,16 @@ def main() -> int:
 
     # Import here (after sys.path is set) so each module's own logging
     # config doesn't clobber ours — basicConfig above ran first.
-    from scrapers.fetch_prices    import fetch_prices
-    from scrapers.extract_tickers import run_extraction
-    from scrapers.calc_returns    import calc_returns
+    from scrapers.fetch_prices         import fetch_prices
+    from scrapers.extract_tickers      import run_extraction
+    from scrapers.calc_returns         import calc_returns
+    from scrapers.fetch_daily_mentions import fetch_daily_mentions
 
     steps = [
-        ('fetch_prices',    fetch_prices),
-        ('extract_tickers', run_extraction),
-        ('calc_returns',    calc_returns),
+        ('fetch_prices',         fetch_prices),
+        ('extract_tickers',      run_extraction),
+        ('calc_returns',         calc_returns),
+        ('fetch_daily_mentions', fetch_daily_mentions),
     ]
 
     any_failed = False
