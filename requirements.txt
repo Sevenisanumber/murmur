@@ -29,3 +29,6 @@ requests==2.34.2
 python-dotenv==1.2.2
 pytz==2026.2
 schedule==1.2.2
+
+# AI analysis (weekly digest)
+anthropic==0.105.2
