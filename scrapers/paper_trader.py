@@ -302,6 +302,27 @@ def check_exits(api, conn, today: str, dry_run: bool = False) -> int:
     return closed
 
 
+# ── Short interest / squeeze watch ───────────────────────────────────────────
+
+SQUEEZE_DTC_MIN   = 5.0   # same threshold as daily_report
+SQUEEZE_BONUS     = 10.0  # score bonus for SQUEEZE_WATCH + HOT
+
+
+def load_squeeze_watch(conn, dtc_min: float = SQUEEZE_DTC_MIN) -> set[str]:
+    """Return tickers whose most-recent short interest has days_to_cover > dtc_min."""
+    rows = conn.execute(
+        """SELECT ticker
+             FROM short_interest si
+            WHERE days_to_cover > ?
+              AND report_date = (
+                  SELECT MAX(report_date) FROM short_interest si2
+                   WHERE si2.ticker = si.ticker
+              )""",
+        (dtc_min,),
+    ).fetchall()
+    return {r[0] for r in rows}
+
+
 # ── Signal loading ────────────────────────────────────────────────────────────
 
 def load_signals(date: str, db_path: str = DB_PATH) -> list[dict]:
@@ -355,6 +376,11 @@ def run_trading(date: str, db_path: str = DB_PATH, dry_run: bool = False) -> Non
 
     log.info(f'Loaded {len(rows)} signal rows for {date}')
 
+    # ── 2b. Load squeeze watch set ────────────────────────────────────────────
+    squeeze_watch = load_squeeze_watch(conn)
+    if squeeze_watch:
+        log.info(f'Squeeze watch: {len(squeeze_watch)} tickers with DtC > {SQUEEZE_DTC_MIN}')
+
     # ── 3. Build context for entry decisions ──────────────────────────────────
     open_positions  = load_open_positions(conn)
     held_tickers    = {p['ticker'] for p in open_positions}
@@ -382,11 +408,17 @@ def run_trading(date: str, db_path: str = DB_PATH, dry_run: bool = False) -> Non
             log.info(f'[SKIP] {ticker} | EXTREME velocity ({velocity:.1f}x) — never trade')
             continue
 
+        # Squeeze watch bonus: HOT + high short interest → +10 to score
+        is_squeeze = ticker in squeeze_watch
+        effective_score = score + SQUEEZE_BONUS if (is_squeeze and effective_tag == 'HOT') else score
+        if is_squeeze and effective_tag == 'HOT':
+            log.info(f'[SQUEEZE] {ticker} | score {score:.1f} + {SQUEEZE_BONUS:.0f} bonus = {effective_score:.1f}')
+
         # Determine if entry conditions are met
         signal_type = None
-        if score > 70 and effective_tag == 'HOT':
-            signal_type = 'HOT_SCORE'
-        elif score > 60 and effective_tag == 'SLOW_BURN':
+        if effective_score > 70 and effective_tag == 'HOT':
+            signal_type = 'SQUEEZE_WATCH' if is_squeeze else 'HOT_SCORE'
+        elif effective_score > 60 and effective_tag == 'SLOW_BURN':
             signal_type = 'SLOW_BURN'
 
         if signal_type is None:
@@ -433,7 +465,7 @@ def run_trading(date: str, db_path: str = DB_PATH, dry_run: bool = False) -> Non
             actual_shares      = float(order.filled_qty)
 
         trade_id = record_trade(
-            conn, ticker, signal_type, score, velocity, effective_tag,
+            conn, ticker, signal_type, effective_score, velocity, effective_tag,
             date, actual_entry_price, actual_shares, POSITION_SIZE,
         )
 
@@ -441,16 +473,18 @@ def run_trading(date: str, db_path: str = DB_PATH, dry_run: bool = False) -> Non
         open_count      += 1
         total_exposure  += POSITION_SIZE
 
+        squeeze_tag = ' [SQUEEZE_WATCH]' if is_squeeze else ''
         log.info(
-            f'[BUY] {ticker} | signal={signal_type} | score={score:.1f} | '
+            f'[BUY] {ticker} | signal={signal_type} | score={effective_score:.1f} | '
             f'vel={velocity:.1f}x | entry=${actual_entry_price:.2f} | '
             f'shares={actual_shares:.4f} | size=${POSITION_SIZE:.0f} | trade_id={trade_id}'
+            + squeeze_tag
             + (' [DRY RUN]' if dry_run else '')
         )
         if not dry_run:
             send_pushover(
                 f'BUY {ticker} @ ${actual_entry_price:.2f} | '
-                f'Signal: {signal_type} {score:.1f} | '
+                f'Signal: {signal_type} {effective_score:.1f}{squeeze_tag} | '
                 f'Size: ${POSITION_SIZE:.0f}'
             )
 

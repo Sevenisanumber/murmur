@@ -48,6 +48,9 @@ SUBREDDIT_HYPE = {
     'investing':      0.20,
 }
 
+# Short squeeze watch threshold
+SQUEEZE_DTC_MIN = 5.0   # days-to-cover above this triggers SQUEEZE_WATCH flag
+
 # Velocity tag thresholds (from Phase 3 findings)
 #   >5×  → EXTREME  (historical avg 7d: -3.41%, reversal risk)
 #   3-5× → HOT      (historical avg 7d: +1.79%, sweet spot)
@@ -95,6 +98,30 @@ def _pct_rank(values: list[float]) -> list[float]:
     if n <= 1:
         return [50.0] * n
     return [bisect.bisect_left(sorted_vals, v) / (n - 1) * 100 for v in values]
+
+
+# ── Short interest helpers ────────────────────────────────────────────────────
+
+def load_short_interest(conn: sqlite3.Connection, tickers: list[str]) -> dict:
+    """
+    Return most-recent short interest record per ticker.
+    {ticker: {short_interest, days_to_cover, float_percent}}
+    """
+    if not tickers:
+        return {}
+    placeholders = ','.join('?' * len(tickers))
+    rows = conn.execute(
+        f"""SELECT ticker, short_interest, days_to_cover, float_percent
+              FROM short_interest
+             WHERE ticker IN ({placeholders})
+             ORDER BY report_date DESC""",
+        tickers,
+    ).fetchall()
+    result: dict = {}
+    for ticker, si, dtc, fp in rows:
+        if ticker not in result:
+            result[ticker] = {'short_interest': si, 'days_to_cover': dtc, 'float_percent': fp}
+    return result
 
 
 # ── Data loading ─────────────────────────────────────────────────────────────
@@ -182,13 +209,18 @@ def compute_sub_hype_score(by_sub: dict) -> float:
 
 # ── Report generation ─────────────────────────────────────────────────────────
 
-def build_rows(ticker_data: dict, velocities: dict) -> list[dict]:
+def build_rows(
+    ticker_data: dict,
+    velocities: dict,
+    si_data: dict | None = None,
+) -> list[dict]:
     tickers = list(ticker_data.keys())
     mention_pct = _pct_rank([math.log1p(ticker_data[t]['total']) for t in tickers])
+    si = si_data or {}
 
     rows = []
     for i, ticker in enumerate(tickers):
-        td = ticker_data[ticker]
+        td  = ticker_data[ticker]
         vel = velocities[ticker]
         sub_hype = compute_sub_hype_score(td['by_sub'])
         vel_s = _velocity_score(vel)
@@ -197,17 +229,22 @@ def build_rows(ticker_data: dict, velocities: dict) -> list[dict]:
             + LIVE_WEIGHTS['sub_hype'] * sub_hype
             + LIVE_WEIGHTS['mention'] * mention_pct[i]
         )
+        si_row = si.get(ticker, {})
+        dtc    = si_row.get('days_to_cover')
         rows.append({
-            'ticker':     ticker,
-            'total':      td['total'],
-            'by_sub':     td['by_sub'],
-            'velocity':   round(vel, 2),
-            'vel_tag':    _velocity_tag(vel),
-            'sub_hype':   round(sub_hype, 1),
-            'mention_pct': round(mention_pct[i], 1),
-            'live_score': round(min(max(live_score, 0), 100), 1),
-            'slow_burn':  vel < 0.5,
-            'n_subs':     len(td['by_sub']),
+            'ticker':        ticker,
+            'total':         td['total'],
+            'by_sub':        td['by_sub'],
+            'velocity':      round(vel, 2),
+            'vel_tag':       _velocity_tag(vel),
+            'sub_hype':      round(sub_hype, 1),
+            'mention_pct':   round(mention_pct[i], 1),
+            'live_score':    round(min(max(live_score, 0), 100), 1),
+            'slow_burn':     vel < 0.5,
+            'n_subs':        len(td['by_sub']),
+            'days_to_cover': dtc,
+            'float_percent': si_row.get('float_percent'),
+            'squeeze_watch': dtc is not None and dtc > SQUEEZE_DTC_MIN,
         })
 
     rows.sort(key=lambda r: r['live_score'], reverse=True)
@@ -313,6 +350,33 @@ def format_report(rows: list[dict], date: str, velocity_note: str, top: int) -> 
     else:
         lines.append('  (none)')
 
+    # ── Short squeeze watch ──────────────────────────────────────────────────
+    squeeze = [r for r in rows if r.get('squeeze_watch')]
+    lines += [
+        '',
+        dash,
+        '── SHORT SQUEEZE WATCH ─────────────────────────────────────────────────',
+        f'   WSB mentions + days-to-cover > {SQUEEZE_DTC_MIN:.0f}  (potential squeeze setup)',
+        dash,
+    ]
+    if squeeze:
+        lines.append(
+            f"  {'Ticker':<6}  {'Mentions':>8}  {'Vel':>5}  {'Score':>5}  "
+            f"{'DtC':>5}  {'Float%':>7}  Tag"
+        )
+        lines.append('  ' + '─' * 60)
+        for r in sorted(squeeze, key=lambda x: (-(x['days_to_cover'] or 0), -x['live_score'])):
+            dtc_str = f"{r['days_to_cover']:.1f}d" if r['days_to_cover'] else '  N/A'
+            fp_str  = f"{r['float_percent']:.1f}%" if r['float_percent'] else '   N/A'
+            tag     = 'SLOW_BURN' if r['slow_burn'] else r['vel_tag']
+            lines.append(
+                f"  {r['ticker']:<6}  {r['total']:>8,}  {r['velocity']:>4.1f}x  "
+                f"{r['live_score']:>5.1f}  {dtc_str:>5}  {fp_str:>7}  {tag}  *** SQUEEZE_WATCH ***"
+            )
+    else:
+        lines.append('  (no tickers today with DtC > 5 and active WSB mentions)')
+        lines.append('  Tip: run fetch_short_interest.py to populate short interest data')
+
     # ── Multi-subreddit tickers ──────────────────────────────────────────────
     multi = [r for r in rows if r['n_subs'] >= 2]
     if multi:
@@ -331,8 +395,9 @@ def format_report(rows: list[dict], date: str, velocity_note: str, top: int) -> 
             lines.append(f"  {r['ticker']:<6}  {r['n_subs']:>4}  {dist}")
 
     # ── Summary ──────────────────────────────────────────────────────────────
-    high_score = sum(1 for r in rows if r['live_score'] > 60)
-    rising     = sum(1 for r in rows if r['vel_tag'] == 'RISING')
+    high_score   = sum(1 for r in rows if r['live_score'] > 60)
+    rising       = sum(1 for r in rows if r['vel_tag'] == 'RISING')
+    squeeze_ct   = sum(1 for r in rows if r.get('squeeze_watch'))
 
     lines += [
         '',
@@ -342,7 +407,7 @@ def format_report(rows: list[dict], date: str, velocity_note: str, top: int) -> 
         f"  High-score (>60): {high_score}   Hot velocity (3-5×): {len(hot)}   "
         f"Extreme (>5×): {len(extreme)}",
         f"  Rising (1.5-3×): {rising}   Slow-burn (<0.5×): {len(slow_burn)}   "
-        f"Multi-sub: {len(multi)}",
+        f"Multi-sub: {len(multi)}   Squeeze watch: {squeeze_ct}",
         '',
         '  Signal legend (from Phase 3 backtests, 2021-2024):',
         '    HOT (3-5×)       →  +1.79% avg 7d   58.6% win rate',
@@ -372,9 +437,10 @@ def generate_report(date: str | None = None, top: int = 15, db_path: str = DB_PA
         )
 
     velocities, vel_note = compute_velocity(conn, date, ticker_data)
+    si_data = load_short_interest(conn, list(ticker_data.keys()))
     conn.close()
 
-    rows = build_rows(ticker_data, velocities)
+    rows = build_rows(ticker_data, velocities, si_data=si_data)
     return format_report(rows, date, vel_note, top)
 
 
