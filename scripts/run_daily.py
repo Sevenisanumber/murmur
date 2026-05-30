@@ -97,6 +97,7 @@ def main() -> int:
     from scrapers.calc_returns         import calc_returns
     from scrapers.fetch_daily_mentions import fetch_daily_mentions
     from scrapers.daily_report         import generate_report
+    from scrapers.paper_trader         import run_trading
 
     def run_daily_report():
         report = generate_report()
@@ -109,12 +110,18 @@ def main() -> int:
         print(report)
         return 1  # non-zero so run_step counts it as a "row"
 
+    def run_paper_trader():
+        date = datetime.now().strftime('%Y-%m-%d')
+        run_trading(date=date, db_path=DB_PATH)
+        return 1
+
     steps = [
         ('fetch_prices',         fetch_prices),
         ('extract_tickers',      run_extraction),
         ('calc_returns',         calc_returns),
         ('fetch_daily_mentions', fetch_daily_mentions),
         ('daily_report',         run_daily_report),
+        ('paper_trader',         run_paper_trader),
     ]
 
     any_failed = False
