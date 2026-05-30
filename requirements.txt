@@ -1,0 +1,31 @@
+# WSB Signal Lab — Python dependencies
+#
+# Install: pip install -r requirements.txt
+#
+# Note: yfinance is pinned to 0.2.58 — the last release with no websockets
+# dependency. yfinance>=0.2.59 requires websockets>=11.0 and yfinance>=1.0
+# requires websockets>=13.0, both conflicting with alpaca-trade-api==3.2.0's
+# websockets<11 constraint. The project only uses yf.download() which works
+# identically across versions.
+
+# Reddit data
+praw==7.8.1
+
+# Market data & paper trading
+alpaca-trade-api==3.2.0
+yfinance==0.2.58
+
+# Data processing
+pandas==3.0.3
+numpy==2.4.6
+
+# Web dashboard
+Flask==3.1.3
+
+# HTTP
+requests==2.34.2
+
+# Utilities
+python-dotenv==1.2.2
+pytz==2026.2
+schedule==1.2.2
