@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 """
-Phase 3: Signal Scorer  (v3 — negative thesis + velocity ceiling)
+Phase 3: Signal Scorer  (v4 — recalibrated thesis weight + slow_burn flag)
 Computes composite signal scores (0-100) for WSB ticker-day pairs and runs
 predictive analysis against forward returns.
 
-v1→v2: shifted from thesis-quality to momentum-first; alpha went from
-        -0.07% to +2.43% at 7d.  Pearson r(thesis, 7d_ret) = -0.042.
-v2→v3: thesis weight set negative (-0.5) as the data supports.
-        Velocity now uses a shaped score instead of percentile rank:
-        peaks at 3–5× the ticker's 30d avg, penalises >5× (reversal risk).
+v1→v2: momentum-first weights; alpha +2.43% 7d.
+v2→v3: thesis=-0.5, shaped velocity; alpha +2.92% 7d on 20k-row dataset.
+v3→v4: Pearson r(thesis, ret) weakened to -0.018 on fuller data → thesis
+        weight eased from -0.5 to -0.2.  Added slow_burn flag (velocity<0.5)
+        as a stored label capturing the slow-burn 30d return pattern.
 
 Score components (weights):
   - Mention velocity     40%  (shaped: peak 3–5×, penalty >5×)
-  - Hype/momentum mix   25%  (hype/options_yolo +, thesis -0.5 penalty)
+  - Hype/momentum mix   25%  (hype/options_yolo +, thesis -0.2 penalty)
   - Mention count        20%  (log-scale, percentile-ranked)
   - Avg post score       15%  (upvotes, percentile-ranked)
+
+Additional stored flag:
+  - slow_burn            1 if velocity_ratio < 0.5 (below-avg, strong 30d pattern)
 """
 
 import bisect
@@ -45,23 +48,25 @@ WEIGHTS = {
     'upvote':    0.15,
 }
 
-# v3: thesis confirmed negative by data (Pearson r = -0.042).
+# v4: thesis r weakened to -0.018 on expanded dataset → eased to -0.2.
 HYPE_MIX_WEIGHTS = {
     'hype':          3.0,
     'options_yolo':  2.5,
     'meme':          1.0,
     'news_reaction': 0.5,
     'loss_porn':     0.25,
-    'thesis':       -0.5,  # negative: empirically reduces returns on WSB
+    'thesis':       -0.2,  # mild penalty; near-neutral on full dataset
     'other':         0.1,
 }
+SLOW_BURN_THRESHOLD = 0.5  # velocity_ratio below this → slow_burn flag
 MAX_HYPE_WEIGHT  = 3.0   # normalise against all-hype ceiling
 MAX_VELOCITY_CAP = 10.0  # cap raw ratio before scoring
 
 
 def create_signals_table(conn: sqlite3.Connection):
+    conn.execute("DROP TABLE IF EXISTS signals")
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS signals (
+        CREATE TABLE signals (
             ticker             TEXT NOT NULL,
             date               TEXT NOT NULL,
             signal_score       REAL,
@@ -71,12 +76,12 @@ def create_signals_table(conn: sqlite3.Connection):
             avg_post_score     REAL,
             unique_authors     INTEGER,
             velocity_ratio     REAL,
+            slow_burn          INTEGER,
             forward_return_7d  REAL,
             forward_return_30d REAL,
             PRIMARY KEY (ticker, date)
         )
     """)
-    conn.execute("DELETE FROM signals")
     conn.commit()
 
 
@@ -212,6 +217,7 @@ def score_signals(rows: list[dict], velocity: dict[tuple, float]) -> list[dict]:
             **r,
             'signal_score':   round(min(max(composite, 0.0), 100.0), 2),
             'velocity_ratio': round(vel_raw[i], 4),
+            'slow_burn':      1 if vel_raw[i] < SLOW_BURN_THRESHOLD else 0,
         })
     return scored
 
@@ -220,15 +226,15 @@ def store_signals(conn: sqlite3.Connection, scored: list[dict]):
     conn.executemany(
         """INSERT OR REPLACE INTO signals
            (ticker, date, signal_score, mention_count, thesis_count, hype_count,
-            avg_post_score, unique_authors, velocity_ratio,
+            avg_post_score, unique_authors, velocity_ratio, slow_burn,
             forward_return_7d, forward_return_30d)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         [
             (
                 r['ticker'], r['date'], r['signal_score'],
                 r['mention_count'], r['thesis_count'], r['hype_count'],
                 r['avg_post_score'], r['unique_authors'], r['velocity_ratio'],
-                r['forward_return_7d'], r['forward_return_30d'],
+                r['slow_burn'], r['forward_return_7d'], r['forward_return_30d'],
             )
             for r in scored
         ],
@@ -254,18 +260,19 @@ def analyze_signals(conn: sqlite3.Connection) -> str:
 
     lines += [
         sep,
-        "WSB Signal Lab — Phase 3: Signal Analysis  (v3)",
+        "WSB Signal Lab — Phase 3: Signal Analysis  (v4)",
         f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         sep,
         "",
         "Scorer evolution:",
-        "  v1  thesis-quality first    alpha 7d = -0.07%   30d = -2.99%",
+        "  v1  thesis-quality first      alpha 7d = -0.07%   30d = -2.99%",
         "  v2  momentum-first, thesis=0  alpha 7d = +2.43%   30d = +1.59%",
-        "  v3  thesis=-0.5, vel ceiling  (this run)",
+        "  v3  thesis=-0.5, vel ceiling  alpha 7d = +2.92%   30d = +5.11%",
+        "  v4  thesis=-0.2, slow_burn flag  (this run)",
         "",
-        "v3 changes vs v2:",
-        "  thesis weight        0.0 → -0.5  (confirmed negative predictor)",
-        "  velocity scoring     pct_rank → shaped peak at 3-5×, penalty >5×",
+        "v4 changes vs v3:",
+        "  thesis weight   -0.5 → -0.2  (r weakened to -0.018 on 20k-row dataset)",
+        "  slow_burn flag  added to signals table (velocity_ratio < 0.5)",
     ]
 
     # Dataset summary
@@ -283,7 +290,7 @@ def analyze_signals(conn: sqlite3.Connection) -> str:
     ]
 
     # Score distribution
-    lines.append("\nScore distribution (v3):")
+    lines.append("\nScore distribution (v4):")
     for lo, hi in [(0, 20), (20, 40), (40, 60), (60, 80), (80, 100)]:
         n = conn.execute(
             "SELECT COUNT(*) FROM signals WHERE signal_score >= ? AND signal_score < ?",
@@ -294,9 +301,9 @@ def analyze_signals(conn: sqlite3.Connection) -> str:
 
     # ── 1. Signal score buckets vs forward returns ────────────────────────────
     lines += ["", "-" * 62,
-              "[1] Signal Score Buckets vs Forward Returns  (v3)", "-" * 62,
+              "[1] Signal Score Buckets vs Forward Returns  (v4)", "-" * 62,
               f"  {'Bucket':<22} {'N':>6}  {'Avg 7d':>8}  {'Avg 30d':>8}  {'Win%':>6}",
-              f"  {'v1: High -0.07%α   v2: High +2.43%α   (baseline +1.36%)':<58}"]
+              f"  {'v1: -0.07%α  v2: +2.43%α  v3: +2.92%α  (see [4] for full table)':<58}"]
     for label, cond in [
         ("High  (>70)",    "signal_score > 70"),
         ("Medium (40–70)", "signal_score BETWEEN 40 AND 70"),
@@ -375,9 +382,9 @@ def analyze_signals(conn: sqlite3.Connection) -> str:
         f"  Verdict: thesis weight should be {'NEGATIVE' if corr < -0.02 else 'ZERO (neutral)'}",
     ]
 
-    # ── 4. Baseline vs signal alpha — v1 / v2 / v3 comparison ────────────────
+    # ── 4. Baseline vs signal alpha — v1/v2/v3/v4 comparison ─────────────────
     lines += ["", "-" * 62,
-              "[4] Baseline vs Signal Performance  (v1 / v2 / v3)", "-" * 62]
+              "[4] Baseline vs Signal Performance  (v1 / v2 / v3 / v4)", "-" * 62]
     base = conn.execute(
         "SELECT AVG(forward_return_7d)*100, AVG(forward_return_30d)*100 "
         "FROM signals WHERE forward_return_7d IS NOT NULL"
@@ -386,23 +393,24 @@ def analyze_signals(conn: sqlite3.Connection) -> str:
         "SELECT AVG(forward_return_7d)*100, AVG(forward_return_30d)*100 "
         "FROM signals WHERE signal_score > 70 AND forward_return_7d IS NOT NULL"
     ).fetchone()
-    v3_alpha_7d  = high[0] - base[0]
-    v3_alpha_30d = high[1] - base[1]
+    v4_alpha_7d  = high[0] - base[0]
+    v4_alpha_30d = high[1] - base[1]
     lines += [
-        f"  Baseline (all rows)          : 7d = {base[0]:+.2f}%   30d = {base[1]:+.2f}%",
+        f"  Baseline (all rows)               : 7d = {base[0]:+.2f}%   30d = {base[1]:+.2f}%",
         f"",
-        f"  {'Version':<6}  {'Weight design':<35}  {'Alpha 7d':>8}  {'Alpha 30d':>9}",
-        f"  {'------':<6}  {'-'*35}  {'--------':>8}  {'---------':>9}",
-        f"  {'v1':<6}  {'thesis-first, diversity 15%':<35}  {'-0.07%':>8}  {'-2.99%':>9}",
-        f"  {'v2':<6}  {'momentum-first, thesis=0':<35}  {'+2.43%':>8}  {'+1.59%':>9}",
-        f"  {'v3':<6}  {'thesis=-0.5, vel ceiling':<35}  {v3_alpha_7d:>+7.2f}%  {v3_alpha_30d:>+8.2f}%",
+        f"  {'Ver':<4}  {'Weight design':<38}  {'Alpha 7d':>8}  {'Alpha 30d':>9}",
+        f"  {'---':<4}  {'-'*38}  {'--------':>8}  {'---------':>9}",
+        f"  {'v1':<4}  {'thesis-first, diversity 15%':<38}  {'-0.07%':>8}  {'-2.99%':>9}",
+        f"  {'v2':<4}  {'momentum-first, thesis=0':<38}  {'+2.43%':>8}  {'+1.59%':>9}",
+        f"  {'v3':<4}  {'thesis=-0.5, vel ceiling':<38}  {'+2.92%':>8}  {'+5.11%':>9}",
+        f"  {'v4':<4}  {'thesis=-0.2, slow_burn flag':<38}  {v4_alpha_7d:>+7.2f}%  {v4_alpha_30d:>+8.2f}%",
         f"",
-        f"  v3 high-signal (>70)         : 7d = {high[0]:+.2f}%   30d = {high[1]:+.2f}%",
+        f"  v4 high-signal (>70)              : 7d = {high[0]:+.2f}%   30d = {high[1]:+.2f}%",
     ]
 
     # ── 5. Velocity detail ────────────────────────────────────────────────────
     lines += ["", "-" * 62,
-              "[5] Mention Velocity vs 7d Return  (40% of score, shaped in v3)", "-" * 62,
+              "[5] Mention Velocity vs 7d Return  (40% of score, shaped)", "-" * 62,
               f"  {'Velocity bucket':<30} {'N':>6}  {'Avg 7d':>8}  {'Avg 30d':>8}  {'Win%':>6}"]
     for label, cond in [
         ("Extreme  (>5× avg)",    "velocity_ratio > 5"),
@@ -421,24 +429,25 @@ def analyze_signals(conn: sqlite3.Connection) -> str:
             f"  {label:<30} {r[0]:>6,}  {r[1]:>+7.2f}%  {r[2]:>+7.2f}%  {r[3]:>5.1f}%"
         )
 
-    # ── 6. Top 20 highest v3 signal days ──────────────────────────────────────
+    # ── 6. Top 20 highest v4 signal days ──────────────────────────────────────
     lines += ["", "-" * 62,
-              "[6] Top 20 Highest Signal Score Days  (v3)", "-" * 62,
+              "[6] Top 20 Highest Signal Score Days  (v4, all years)", "-" * 62,
               f"  {'Ticker':<8} {'Date':<12} {'Score':>6} {'Mentions':>8} "
-              f"{'Vel':>5} {'7d Ret':>8} {'30d Ret':>8}",
-              "  " + "-" * 60]
+              f"{'Vel':>5} {'SB':>3} {'7d Ret':>8} {'30d Ret':>8}",
+              "  " + "-" * 64]
     for row in conn.execute("""
         SELECT ticker, date, signal_score, mention_count, velocity_ratio,
-               forward_return_7d * 100, forward_return_30d * 100
+               slow_burn, forward_return_7d * 100, forward_return_30d * 100
         FROM signals
         WHERE forward_return_7d IS NOT NULL
         ORDER BY signal_score DESC LIMIT 20
     """):
-        r7  = f"{row[5]:+.1f}%" if row[5] is not None else "N/A"
-        r30 = f"{row[6]:+.1f}%" if row[6] is not None else "N/A"
+        r7  = f"{row[6]:+.1f}%" if row[6] is not None else "N/A"
+        r30 = f"{row[7]:+.1f}%" if row[7] is not None else "N/A"
+        sb  = "✓" if row[5] else " "
         lines.append(
             f"  {row[0]:<8} {row[1]:<12} {row[2]:>6.1f} {row[3]:>8,} "
-            f"{row[4]:>4.1f}x {r7:>8} {r30:>8}"
+            f"{row[4]:>4.1f}x {sb:>3} {r7:>8} {r30:>8}"
         )
 
     # ── 7. High-velocity + high-hype intersection ─────────────────────────────
@@ -465,6 +474,49 @@ def analyze_signals(conn: sqlite3.Connection) -> str:
             f"  {label}",
             f"    n={r[0]:,}  avg_7d={r[1]:+.2f}%  avg_30d={r[2]:+.2f}%  win%={r[3]:.1f}%",
         ]
+
+    # ── 8. Slow-burn signal analysis ──────────────────────────────────────────
+    sb_n = conn.execute(
+        "SELECT COUNT(*) FROM signals WHERE slow_burn = 1"
+    ).fetchone()[0]
+    lines += ["", "-" * 62,
+              f"[8] Slow-Burn Flag Analysis  (velocity < 0.5×, n={sb_n:,})", "-" * 62,
+              "  slow_burn=1 means fewer mentions today than the ticker's 30d avg.",
+              "  Strong 30d signal observed in v3 data (+7.29%); testing on full set.",
+              f"  {'Group':<28} {'N':>6}  {'Avg 7d':>8}  {'Avg 30d':>8}  {'Win%':>6}"]
+    for label, cond in [
+        ("slow_burn=1 (below avg vel)",  "slow_burn = 1"),
+        ("slow_burn=0 (normal/high vel)", "slow_burn = 0"),
+    ]:
+        r = conn.execute(f"""
+            SELECT COUNT(*),
+                   AVG(forward_return_7d)  * 100,
+                   AVG(forward_return_30d) * 100,
+                   SUM(CASE WHEN forward_return_7d > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*)
+            FROM signals WHERE {cond} AND forward_return_7d IS NOT NULL
+        """).fetchone()
+        lines.append(
+            f"  {label:<28} {r[0]:>6,}  {r[1]:>+7.2f}%  {r[2]:>+7.2f}%  {r[3]:>5.1f}%"
+        )
+
+    # Slow-burn broken down by hype vs thesis mix
+    lines += ["", "  Slow-burn breakdown by composition:"]
+    for label, cond in [
+        ("  slow_burn + hype-heavy",   "slow_burn=1 AND hype_count*1.0/mention_count > 0.3"),
+        ("  slow_burn + thesis-heavy", "slow_burn=1 AND thesis_count*1.0/mention_count > 0.5"),
+        ("  slow_burn + high score",   "slow_burn=1 AND signal_score > 50"),
+    ]:
+        r = conn.execute(f"""
+            SELECT COUNT(*),
+                   AVG(forward_return_7d)  * 100,
+                   AVG(forward_return_30d) * 100,
+                   SUM(CASE WHEN forward_return_7d > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*)
+            FROM signals WHERE {cond} AND forward_return_7d IS NOT NULL
+        """).fetchone()
+        if r[0]:
+            lines.append(
+                f"  {label:<28} n={r[0]:,}  7d={r[1]:+.2f}%  30d={r[2]:+.2f}%  win={r[3]:.1f}%"
+            )
 
     lines.append("\n" + sep)
     return "\n".join(lines)
