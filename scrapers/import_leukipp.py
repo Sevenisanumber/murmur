@@ -16,10 +16,12 @@ Column mapping to posts schema:
     shortlink       → url
     link_flair_text → flair
     source                          fixed to 'leukipp'
+    subreddit arg   → subreddit    (e.g. 'wallstreetbets')
 
 New columns added to posts if absent:
     total_awards_received  INTEGER
     num_crossposts         INTEGER
+    subreddit              TEXT
 
 (upvote_ratio already exists in the base schema.)
 
@@ -58,6 +60,7 @@ CHUNK_SIZE = 10_000
 NEW_COLUMNS = [
     ('total_awards_received', 'INTEGER'),
     ('num_crossposts',        'INTEGER'),
+    ('subreddit',             'TEXT'),
 ]
 
 
@@ -129,12 +132,12 @@ INSERT_SQL = """
     INSERT OR IGNORE INTO posts
         (post_id, author, title, body, score, upvote_ratio, num_comments,
          created_utc, url, flair, is_self, scraped_at, source,
-         total_awards_received, num_crossposts)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         total_awards_received, num_crossposts, subreddit)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 """
 
 
-def _make_record(row: dict, scraped_at_fallback: int) -> tuple | None:
+def _make_record(row: dict, scraped_at_fallback: int, subreddit: str = '') -> tuple | None:
     post_id = row.get('id', '').strip()
     if not post_id:
         return None
@@ -161,6 +164,7 @@ def _make_record(row: dict, scraped_at_fallback: int) -> tuple | None:
         'leukipp',
         _safe_int(row.get('total_awards_received')),
         _safe_int(row.get('num_crossposts')),
+        subreddit or None,
     )
 
 
@@ -219,7 +223,7 @@ def import_leukipp(
                     break
 
                 try:
-                    record = _make_record(row, scraped_at_fallback=started_at)
+                    record = _make_record(row, scraped_at_fallback=started_at, subreddit=subreddit)
                 except Exception as e:
                     row_errors += 1
                     skipped += 1
