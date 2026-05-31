@@ -97,6 +97,16 @@ def init_db(db_path=DB_PATH):
 
         CREATE INDEX IF NOT EXISTS idx_dm_date    ON daily_mentions(date);
         CREATE INDEX IF NOT EXISTS idx_dm_ticker  ON daily_mentions(ticker);
+
+        CREATE TABLE IF NOT EXISTS short_interest (
+            ticker        TEXT NOT NULL,
+            report_date   TEXT NOT NULL,   -- YYYY-MM-DD
+            short_interest INTEGER,
+            days_to_cover REAL,
+            float_percent REAL,
+            fetched_at    INTEGER,          -- unix timestamp
+            PRIMARY KEY (ticker, report_date)
+        );
     """)
 
     conn.commit()
