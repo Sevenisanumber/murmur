@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""WSB Signal Lab dashboard — Flask app serving a single-page read-only view."""
+"""Murmur dashboard — Flask app serving a single-page read-only view."""
 
 import os
 import sqlite3

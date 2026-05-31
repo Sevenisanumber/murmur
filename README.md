@@ -1,4 +1,4 @@
-# WSB Signal Lab
+# Murmur
 
 Collects WallStreetBets Reddit sentiment alongside stock price data.
 Stores everything locally on a Raspberry Pi 5. No trades. No LLM. Just data.
