@@ -258,11 +258,22 @@ def index():
             'change':    chg,
         })
 
-    # ── signal history: last 30 days, ≥2 mentions, limit 200 rows ─────────────
+    # ── signal history: last 30 days of data that has forward returns ──────────
+    # latest_ts may lag behind: posts run through ~2021-12 but forward returns
+    # only exist through ~2021-09 (need ~30d future price data to compute).
+    # Anchor the window on the latest post that actually has a return value.
+    history_anchor = conn.execute('''
+        SELECT MAX(p.created_utc)
+          FROM post_tickers pt
+          JOIN posts p ON p.post_id = pt.post_id
+         WHERE pt.forward_return_1d IS NOT NULL
+    ''').fetchone()[0] or 0
+    cutoff_history = history_anchor - 30 * 86_400
+
     history = conn.execute('''
-        SELECT DATE(p.created_utc, 'unixepoch')          AS post_date,
+        SELECT DATE(p.created_utc, 'unixepoch')           AS post_date,
                pt.ticker,
-               COUNT(*)                                   AS mentions,
+               COUNT(*)                                    AS mentions,
                ROUND(AVG(pt.forward_return_1d)  * 100, 2) AS avg_1d,
                ROUND(AVG(pt.forward_return_7d)  * 100, 2) AS avg_7d,
                ROUND(AVG(pt.forward_return_30d) * 100, 2) AS avg_30d
@@ -274,7 +285,7 @@ def index():
         HAVING mentions >= 2
          ORDER BY post_date DESC, mentions DESC
          LIMIT 200
-    ''', {'cutoff': cutoff_30d}).fetchall()
+    ''', {'cutoff': cutoff_history}).fetchall()
 
     # ── today's top tickers from daily_mentions ───────────────────────────────
     dm_date_row = conn.execute('SELECT MAX(date) FROM daily_mentions').fetchone()
