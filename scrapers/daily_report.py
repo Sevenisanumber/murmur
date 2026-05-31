@@ -100,6 +100,35 @@ def _pct_rank(values: list[float]) -> list[float]:
     return [bisect.bisect_left(sorted_vals, v) / (n - 1) * 100 for v in values]
 
 
+# ── Options activity helpers ──────────────────────────────────────────────────
+
+def load_options_active(conn: sqlite3.Connection, tickers: list[str]) -> set[str]:
+    """
+    Return tickers that appeared in options_yolo classified posts during the
+    last 7 days of the historical dataset.  Uses MAX(created_utc) dynamically
+    so it stays correct if more data is ever imported.
+    """
+    if not tickers:
+        return set()
+    max_utc = conn.execute(
+        "SELECT MAX(created_utc) FROM posts WHERE classification IS NOT NULL"
+    ).fetchone()[0]
+    if not max_utc:
+        return set()
+    cutoff = max_utc - 7 * 86400
+    placeholders = ','.join('?' * len(tickers))
+    rows = conn.execute(
+        f"""SELECT DISTINCT pt.ticker
+              FROM post_tickers pt
+              JOIN posts p ON p.post_id = pt.post_id
+             WHERE p.classification = 'options_yolo'
+               AND p.created_utc >= ?
+               AND pt.ticker IN ({placeholders})""",
+        (cutoff, *tickers),
+    ).fetchall()
+    return {r[0] for r in rows}
+
+
 # ── Short interest helpers ────────────────────────────────────────────────────
 
 def load_short_interest(conn: sqlite3.Connection, tickers: list[str]) -> dict:
@@ -213,10 +242,12 @@ def build_rows(
     ticker_data: dict,
     velocities: dict,
     si_data: dict | None = None,
+    options_active: set | None = None,
 ) -> list[dict]:
     tickers = list(ticker_data.keys())
     mention_pct = _pct_rank([math.log1p(ticker_data[t]['total']) for t in tickers])
-    si = si_data or {}
+    si  = si_data or {}
+    opt = options_active or set()
 
     rows = []
     for i, ticker in enumerate(tickers):
@@ -232,19 +263,20 @@ def build_rows(
         si_row = si.get(ticker, {})
         dtc    = si_row.get('days_to_cover')
         rows.append({
-            'ticker':        ticker,
-            'total':         td['total'],
-            'by_sub':        td['by_sub'],
-            'velocity':      round(vel, 2),
-            'vel_tag':       _velocity_tag(vel),
-            'sub_hype':      round(sub_hype, 1),
-            'mention_pct':   round(mention_pct[i], 1),
-            'live_score':    round(min(max(live_score, 0), 100), 1),
-            'slow_burn':     vel < 0.5,
-            'n_subs':        len(td['by_sub']),
-            'days_to_cover': dtc,
-            'float_percent': si_row.get('float_percent'),
-            'squeeze_watch': dtc is not None and dtc > SQUEEZE_DTC_MIN,
+            'ticker':          ticker,
+            'total':           td['total'],
+            'by_sub':          td['by_sub'],
+            'velocity':        round(vel, 2),
+            'vel_tag':         _velocity_tag(vel),
+            'sub_hype':        round(sub_hype, 1),
+            'mention_pct':     round(mention_pct[i], 1),
+            'live_score':      round(min(max(live_score, 0), 100), 1),
+            'slow_burn':       vel < 0.5,
+            'n_subs':          len(td['by_sub']),
+            'days_to_cover':   dtc,
+            'float_percent':   si_row.get('float_percent'),
+            'squeeze_watch':   dtc is not None and dtc > SQUEEZE_DTC_MIN,
+            'options_active':  ticker in opt,
         })
 
     rows.sort(key=lambda r: r['live_score'], reverse=True)
@@ -298,17 +330,21 @@ def format_report(rows: list[dict], date: str, velocity_note: str, top: int) -> 
     lines += [
         '',
         f'── TOP {top} SIGNALS ──────────────────────────────────────────────────────',
-        f"  {'#':>2}  {'Ticker':<6}  {'Mentions':>8}  {'Vel':>5}  {'Score':>5}  {'Tag':<10}  Subs",
-        '  ' + '─' * 64,
+        f"  {'#':>2}  {'Ticker':<6}  {'Mentions':>8}  {'Vel':>5}  {'Score':>5}  {'Tag':<10}  {'Flags':<14}  Subs",
+        '  ' + '─' * 78,
     ]
     for i, r in enumerate(top_rows, 1):
         tag = r['vel_tag']
         if r['slow_burn']:
             tag = 'SLOW_BURN'
+        flags = ' '.join(f for f in [
+            'OPTIONS_ACTIVE' if r['options_active'] else '',
+            'SQUEEZE_WATCH'  if r['squeeze_watch']  else '',
+        ] if f)
         lines.append(
             f"  {i:>2}  {r['ticker']:<6}  {r['total']:>8,}  "
             f"{r['velocity']:>4.1f}x  {r['live_score']:>5.1f}  "
-            f"{tag:<10}  {_sub_list(r['by_sub'])}"
+            f"{tag:<10}  {flags:<14}  {_sub_list(r['by_sub'])}"
         )
 
     # ── Velocity alert sections ──────────────────────────────────────────────
@@ -321,9 +357,10 @@ def format_report(rows: list[dict], date: str, velocity_note: str, top: int) -> 
     lines.append('EXTREME (>5×) — CAUTION: historical avg 7d = -3.41% (reversal risk)')
     if extreme:
         for r in extreme:
+            flag = '  [OPTIONS_ACTIVE]' if r['options_active'] else ''
             lines.append(
                 f"  {r['ticker']:<6}  {r['total']:>7,} mentions  "
-                f"{r['velocity']:.1f}x  [{_sub_list(r['by_sub'])}]"
+                f"{r['velocity']:.1f}x  [{_sub_list(r['by_sub'])}]{flag}"
             )
     else:
         lines.append('  (none)')
@@ -332,9 +369,10 @@ def format_report(rows: list[dict], date: str, velocity_note: str, top: int) -> 
     lines.append('HOT (3-5×) — WATCH: historical avg 7d = +1.79% (sweet spot)')
     if hot:
         for r in hot:
+            flag = '  [OPTIONS_ACTIVE]' if r['options_active'] else ''
             lines.append(
                 f"  {r['ticker']:<6}  {r['total']:>7,} mentions  "
-                f"{r['velocity']:.1f}x  [{_sub_list(r['by_sub'])}]"
+                f"{r['velocity']:.1f}x  [{_sub_list(r['by_sub'])}]{flag}"
             )
     else:
         lines.append('  (none)')
@@ -343,9 +381,10 @@ def format_report(rows: list[dict], date: str, velocity_note: str, top: int) -> 
     lines.append('SLOW BURN (<0.5×) — HOLD: historical avg 30d = +7.29%  win% 57.2%')
     if slow_burn:
         for r in slow_burn:
+            flag = '  [OPTIONS_ACTIVE]' if r['options_active'] else ''
             lines.append(
                 f"  {r['ticker']:<6}  {r['total']:>7,} mentions  "
-                f"{r['velocity']:.2f}x  [{_sub_list(r['by_sub'])}]"
+                f"{r['velocity']:.2f}x  [{_sub_list(r['by_sub'])}]{flag}"
             )
     else:
         lines.append('  (none)')
@@ -398,6 +437,7 @@ def format_report(rows: list[dict], date: str, velocity_note: str, top: int) -> 
     high_score   = sum(1 for r in rows if r['live_score'] > 60)
     rising       = sum(1 for r in rows if r['vel_tag'] == 'RISING')
     squeeze_ct   = sum(1 for r in rows if r.get('squeeze_watch'))
+    options_ct   = sum(1 for r in rows if r.get('options_active'))
 
     lines += [
         '',
@@ -407,12 +447,15 @@ def format_report(rows: list[dict], date: str, velocity_note: str, top: int) -> 
         f"  High-score (>60): {high_score}   Hot velocity (3-5×): {len(hot)}   "
         f"Extreme (>5×): {len(extreme)}",
         f"  Rising (1.5-3×): {rising}   Slow-burn (<0.5×): {len(slow_burn)}   "
-        f"Multi-sub: {len(multi)}   Squeeze watch: {squeeze_ct}",
+        f"Multi-sub: {len(multi)}   Squeeze watch: {squeeze_ct}   Options active: {options_ct}",
         '',
         '  Signal legend (from Phase 3 backtests, 2021-2024):',
         '    HOT (3-5×)       →  +1.79% avg 7d   58.6% win rate',
         '    EXTREME (>5×)    →  -3.41% avg 7d   CAUTION',
         '    SLOW_BURN (<0.5) →  +7.29% avg 30d  57.2% win  (strongest edge)',
+        '    OPTIONS_ACTIVE   →  ticker appeared in options_yolo posts (Dec 2021)',
+        '                        70% of r/options live mentions match this flag',
+        '                        (r/options sub mention is a proxy for active options interest)',
         sep,
     ]
 
@@ -437,10 +480,12 @@ def generate_report(date: str | None = None, top: int = 15, db_path: str = DB_PA
         )
 
     velocities, vel_note = compute_velocity(conn, date, ticker_data)
-    si_data = load_short_interest(conn, list(ticker_data.keys()))
+    ticker_list = list(ticker_data.keys())
+    si_data      = load_short_interest(conn, ticker_list)
+    opts_active  = load_options_active(conn, ticker_list)
     conn.close()
 
-    rows = build_rows(ticker_data, velocities, si_data=si_data)
+    rows = build_rows(ticker_data, velocities, si_data=si_data, options_active=opts_active)
     return format_report(rows, date, vel_note, top)
 
 
