@@ -24,6 +24,7 @@ import warnings
 
 warnings.filterwarnings('ignore')  # suppress yfinance noise
 import yfinance as yf
+yf.set_tz_cache_location("/tmp/yf_cache")  # avoid SQLite conflict with wsb.db
 
 ROOT     = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH  = os.path.join(ROOT, 'data', 'wsb.db')
