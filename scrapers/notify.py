@@ -136,7 +136,22 @@ def send_morning_briefing(report_text: str) -> bool:
 
     lines.append(f'Slow burns: {n_slow} | Squeeze: {n_squeeze} | Opts: {n_opts}')
 
-    return send_pushover('\n'.join(lines), title='Murmur Morning')
+    message = '\n'.join(lines)
+
+    # ── Debug output ──────────────────────────────────────────────────────────
+    print(f'[send_morning_briefing] parsed date_short={date_short!r} n_tickers={n_tickers!r}')
+    print(f'[send_morning_briefing] top_rows={top_rows}')
+    print(f'[send_morning_briefing] hot_tickers={hot_tickers}')
+    print(f'[send_morning_briefing] slow={n_slow} squeeze={n_squeeze} opts={n_opts}')
+    print(f'[send_morning_briefing] message to send:\n{message}')
+
+    try:
+        result = send_pushover(message, title='Murmur Morning')
+        print(f'[send_morning_briefing] send_pushover returned {result!r}')
+        return result
+    except Exception as e:
+        print(f'[send_morning_briefing] send_pushover raised {type(e).__name__}: {e}')
+        return False
 
 
 if __name__ == '__main__':
