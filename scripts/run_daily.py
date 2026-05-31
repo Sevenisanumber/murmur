@@ -98,6 +98,7 @@ def main() -> int:
     from scrapers.fetch_daily_mentions import fetch_daily_mentions
     from scrapers.daily_report         import generate_report
     from scrapers.paper_trader         import run_trading
+    from scrapers.notify               import send_morning_briefing
 
     def run_daily_report():
         report = generate_report()
@@ -108,6 +109,8 @@ def main() -> int:
             f.write('\n')
         log.info(f'Daily report written to {out}')
         print(report)
+        ok = send_morning_briefing(report)
+        log.info(f'Morning briefing: {"sent" if ok else "skipped (no Pushover credentials)"}')
         return 1  # non-zero so run_step counts it as a "row"
 
     def run_paper_trader():
