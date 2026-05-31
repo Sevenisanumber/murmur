@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Phase 3: Signal Scorer  (v4 — recalibrated thesis weight + slow_burn flag)
+Phase 3: Signal Scorer  (v6 — subreddit diversity bonus)
 Computes composite signal scores (0-100) for WSB ticker-day pairs and runs
 predictive analysis against forward returns.
 
@@ -9,15 +9,21 @@ v2→v3: thesis=-0.5, shaped velocity; alpha +2.92% 7d on 20k-row dataset.
 v3→v4: Pearson r(thesis, ret) weakened to -0.018 on fuller data → thesis
         weight eased from -0.5 to -0.2.  Added slow_burn flag (velocity<0.5)
         as a stored label capturing the slow-burn 30d return pattern.
+v4→v5: subreddit quality multiplier; mid-mix (0.7–0.9) outperformed pure WSB.
+v5→v6: cross-community data shows mid-mix +3.01% 7d vs +0.74% pure WSB.
+        Replace subreddit multiplier with an additive diversity bonus that
+        rewards consensus across communities rather than penalising non-WSB.
 
 Score components (weights):
   - Mention velocity     40%  (shaped: peak 3–5×, penalty >5×)
   - Hype/momentum mix   25%  (hype/options_yolo +, thesis -0.2 penalty)
   - Mention count        20%  (log-scale, percentile-ranked)
   - Avg post score       15%  (upvotes, percentile-ranked)
+  + Subreddit diversity   additive bonus: 1=+0, 2=+5, 3=+10, 4+=+15 pts
 
-Additional stored flag:
+Additional stored flags:
   - slow_burn            1 if velocity_ratio < 0.5 (below-avg, strong 30d pattern)
+  - sub_diversity        count of unique subreddits mentioning ticker that day
 """
 
 import bisect
@@ -62,19 +68,14 @@ SLOW_BURN_THRESHOLD = 0.5  # velocity_ratio below this → slow_burn flag
 MAX_HYPE_WEIGHT  = 3.0   # normalise against all-hype ceiling
 MAX_VELOCITY_CAP = 10.0  # cap raw ratio before scoring
 
-# v5: subreddit signal-quality multiplier (applied to composite score).
-# High-energy communities (WSB, GME) get full weight; fundamental/general
-# subreddits get progressively less — their mentions don't carry the same
-# social-momentum effect.
-SUBREDDIT_WEIGHTS = {
-    'wallstreetbets': 1.0,
-    'gamestop':       1.0,
-    'pennystocks':    0.8,
-    'options':        0.6,
-    'stocks':         0.5,
-    'investing':      0.4,
-}
-_SUB_WEIGHT_DEFAULT = 0.75  # unknown / NULL subreddit
+# v6: subreddit diversity bonus (additive points added to composite score).
+# Cross-community consensus outperforms single-source signals.
+# 1 subreddit: baseline (no bonus)
+# 2 subreddits: +5 pts
+# 3 subreddits: +10 pts
+# 4+ subreddits: +15 pts
+_SUB_DIVERSITY_BONUS = {1: 0, 2: 5, 3: 10}
+_SUB_DIVERSITY_BONUS_MAX = 15  # 4+ subs
 
 
 def create_signals_table(conn: sqlite3.Connection):
@@ -91,21 +92,13 @@ def create_signals_table(conn: sqlite3.Connection):
             unique_authors     INTEGER,
             velocity_ratio     REAL,
             slow_burn          INTEGER,
-            avg_sub_weight     REAL,
+            sub_diversity      INTEGER,
             forward_return_7d  REAL,
             forward_return_30d REAL,
             PRIMARY KEY (ticker, date)
         )
     """)
     conn.commit()
-
-
-def _sub_weight_sql() -> str:
-    """Build a SQL CASE expression for subreddit weights from SUBREDDIT_WEIGHTS."""
-    branches = '\n            '.join(
-        f"WHEN '{sub}' THEN {w}" for sub, w in SUBREDDIT_WEIGHTS.items()
-    )
-    return f"CASE p.subreddit\n            {branches}\n            ELSE {_SUB_WEIGHT_DEFAULT} END"
 
 
 def load_ticker_day_data(conn: sqlite3.Connection) -> list[dict]:
@@ -118,8 +111,7 @@ def load_ticker_day_data(conn: sqlite3.Connection) -> list[dict]:
     price_start = conn.execute("SELECT MIN(date) FROM prices").fetchone()[0]
     log.info(f"  Price data starts {price_start} — filtering posts to this window")
 
-    sub_w = _sub_weight_sql()
-    rows = conn.execute(f"""
+    rows = conn.execute("""
         SELECT
             pt.ticker,
             date(p.created_utc, 'unixepoch')                                    AS day,
@@ -137,7 +129,7 @@ def load_ticker_day_data(conn: sqlite3.Connection) -> list[dict]:
             SUM(CASE WHEN p.classification = 'other'         THEN 1 ELSE 0 END)  AS other_count,
             AVG(pt.forward_return_7d)                                             AS forward_return_7d,
             AVG(pt.forward_return_30d)                                            AS forward_return_30d,
-            AVG({sub_w})                                                          AS avg_sub_weight
+            COUNT(DISTINCT p.subreddit)                                           AS sub_diversity
         FROM post_tickers pt
         JOIN posts p ON p.post_id = pt.post_id
         WHERE p.classification IS NOT NULL
@@ -152,7 +144,7 @@ def load_ticker_day_data(conn: sqlite3.Connection) -> list[dict]:
         'ticker', 'date', 'mention_count', 'unique_authors', 'avg_post_score',
         'thesis_count', 'options_yolo_count', 'news_reaction_count', 'hype_count',
         'loss_porn_count', 'meme_count', 'other_count',
-        'forward_return_7d', 'forward_return_30d', 'avg_sub_weight',
+        'forward_return_7d', 'forward_return_30d', 'sub_diversity',
     ]
     return [dict(zip(cols, r)) for r in rows]
 
@@ -231,20 +223,21 @@ def score_signals(rows: list[dict], velocity: dict[tuple, float]) -> list[dict]:
         ) / total
         hype_mix_score = (raw_hype / MAX_HYPE_WEIGHT) * 100
 
-        sub_weight = r.get('avg_sub_weight') or _SUB_WEIGHT_DEFAULT
+        sub_diversity = r.get('sub_diversity') or 1
+        diversity_bonus = _SUB_DIVERSITY_BONUS.get(sub_diversity, _SUB_DIVERSITY_BONUS_MAX)
         composite = (
             WEIGHTS['velocity']  * _velocity_score(vel_raw[i]) +
             WEIGHTS['hype_mix']  * hype_mix_score               +
             WEIGHTS['mention']   * mention_pct[i]               +
             WEIGHTS['upvote']    * upvote_pct[i]
-        ) * sub_weight  # v5: scale by subreddit signal quality
+        ) + diversity_bonus  # v6: additive cross-community consensus bonus
 
         scored.append({
             **r,
             'signal_score':   round(min(max(composite, 0.0), 100.0), 2),
             'velocity_ratio': round(vel_raw[i], 4),
             'slow_burn':      1 if vel_raw[i] < SLOW_BURN_THRESHOLD else 0,
-            'avg_sub_weight': round(sub_weight, 4),
+            'sub_diversity':  sub_diversity,
         })
     return scored
 
@@ -253,7 +246,7 @@ def store_signals(conn: sqlite3.Connection, scored: list[dict]):
     conn.executemany(
         """INSERT OR REPLACE INTO signals
            (ticker, date, signal_score, mention_count, thesis_count, hype_count,
-            avg_post_score, unique_authors, velocity_ratio, slow_burn, avg_sub_weight,
+            avg_post_score, unique_authors, velocity_ratio, slow_burn, sub_diversity,
             forward_return_7d, forward_return_30d)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         [
@@ -261,7 +254,7 @@ def store_signals(conn: sqlite3.Connection, scored: list[dict]):
                 r['ticker'], r['date'], r['signal_score'],
                 r['mention_count'], r['thesis_count'], r['hype_count'],
                 r['avg_post_score'], r['unique_authors'], r['velocity_ratio'],
-                r['slow_burn'], r['avg_sub_weight'],
+                r['slow_burn'], r['sub_diversity'],
                 r['forward_return_7d'], r['forward_return_30d'],
             )
             for r in scored
@@ -288,7 +281,7 @@ def analyze_signals(conn: sqlite3.Connection) -> str:
 
     lines += [
         sep,
-        "WSB Signal Lab — Phase 3: Signal Analysis  (v5)",
+        "WSB Signal Lab — Phase 3: Signal Analysis  (v6)",
         f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         sep,
         "",
@@ -297,14 +290,16 @@ def analyze_signals(conn: sqlite3.Connection) -> str:
         "  v2  momentum-first, thesis=0  alpha 7d = +2.43%   30d = +1.59%",
         "  v3  thesis=-0.5, vel ceiling  alpha 7d = +2.92%   30d = +5.11%",
         "  v4  thesis=-0.2, slow_burn flag  alpha 7d = +2.76%   30d = +5.29%",
-        "  v5  subreddit weight multiplier  (this run)",
+        "  v5  subreddit weight multiplier  alpha 7d = +3.01%   30d = +8.33%",
+        "  v6  subreddit diversity bonus  (this run)",
         "",
-        "v5 changes vs v4:",
-        "  subreddit weight multiplier applied to composite score:",
-        "    wallstreetbets=1.0  gamestop=1.0  pennystocks=0.8",
-        "    options=0.6  stocks=0.5  investing=0.4  (other=0.75)",
-        "  motivation: r/options and r/investing diluted alpha; WSB/GME",
-        "  mentions carry stronger social-momentum signal than fundamentals boards.",
+        "v6 changes vs v5:",
+        "  Replaced subreddit quality multiplier with an additive diversity bonus.",
+        "  v5 revealed mid-mix (0.7-0.9 avg weight) outperforms pure WSB:",
+        "    mid-mix +3.01% 7d / +8.33% 30d  vs  pure WSB +0.74% 7d",
+        "  v6 rewards cross-community consensus directly:",
+        "    1 subreddit: +0 pts  2 subreddits: +5 pts",
+        "    3 subreddits: +10 pts  4+ subreddits: +15 pts",
     ]
 
     # Dataset summary
@@ -322,7 +317,7 @@ def analyze_signals(conn: sqlite3.Connection) -> str:
     ]
 
     # Score distribution
-    lines.append("\nScore distribution (v5):")
+    lines.append("\nScore distribution (v6):")
     for lo, hi in [(0, 20), (20, 40), (40, 60), (60, 80), (80, 100)]:
         n = conn.execute(
             "SELECT COUNT(*) FROM signals WHERE signal_score >= ? AND signal_score < ?",
@@ -333,9 +328,9 @@ def analyze_signals(conn: sqlite3.Connection) -> str:
 
     # ── 1. Signal score buckets vs forward returns ────────────────────────────
     lines += ["", "-" * 62,
-              "[1] Signal Score Buckets vs Forward Returns  (v5)", "-" * 62,
+              "[1] Signal Score Buckets vs Forward Returns  (v6)", "-" * 62,
               f"  {'Bucket':<22} {'N':>6}  {'Avg 7d':>8}  {'Avg 30d':>8}  {'Win%':>6}",
-              f"  {'v1: -0.07%α  v2: +2.43%α  v3: +2.92%α  v4: +2.76%α  (see [4])':<58}"]
+              f"  {'v1:-0.07%α v2:+2.43%α v3:+2.92%α v4:+2.76%α v5:+3.01%α (see [4])':<58}"]
     for label, cond in [
         ("High  (>70)",    "signal_score > 70"),
         ("Medium (40–70)", "signal_score BETWEEN 40 AND 70"),
@@ -414,9 +409,9 @@ def analyze_signals(conn: sqlite3.Connection) -> str:
         f"  Verdict: thesis weight should be {'NEGATIVE' if corr < -0.02 else 'ZERO (neutral)'}",
     ]
 
-    # ── 4. Baseline vs signal alpha — v1/v2/v3/v4/v5 comparison ─────────────
+    # ── 4. Baseline vs signal alpha — v1/v2/v3/v4/v5/v6 comparison ──────────
     lines += ["", "-" * 62,
-              "[4] Baseline vs Signal Performance  (v1 / v2 / v3 / v4 / v5)", "-" * 62]
+              "[4] Baseline vs Signal Performance  (v1 / v2 / v3 / v4 / v5 / v6)", "-" * 62]
     base = conn.execute(
         "SELECT AVG(forward_return_7d)*100, AVG(forward_return_30d)*100 "
         "FROM signals WHERE forward_return_7d IS NOT NULL"
@@ -425,8 +420,8 @@ def analyze_signals(conn: sqlite3.Connection) -> str:
         "SELECT AVG(forward_return_7d)*100, AVG(forward_return_30d)*100 "
         "FROM signals WHERE signal_score > 70 AND forward_return_7d IS NOT NULL"
     ).fetchone()
-    v5_alpha_7d  = high[0] - base[0]
-    v5_alpha_30d = high[1] - base[1]
+    v6_alpha_7d  = high[0] - base[0]
+    v6_alpha_30d = high[1] - base[1]
     lines += [
         f"  Baseline (all rows)               : 7d = {base[0]:+.2f}%   30d = {base[1]:+.2f}%",
         f"",
@@ -436,9 +431,10 @@ def analyze_signals(conn: sqlite3.Connection) -> str:
         f"  {'v2':<4}  {'momentum-first, thesis=0':<42}  {'+2.43%':>8}  {'+1.59%':>9}",
         f"  {'v3':<4}  {'thesis=-0.5, vel ceiling':<42}  {'+2.92%':>8}  {'+5.11%':>9}",
         f"  {'v4':<4}  {'thesis=-0.2, slow_burn flag':<42}  {'+2.76%':>8}  {'+5.29%':>9}",
-        f"  {'v5':<4}  {'+ subreddit weight multiplier (this run)':<42}  {v5_alpha_7d:>+7.2f}%  {v5_alpha_30d:>+8.2f}%",
+        f"  {'v5':<4}  {'+ subreddit weight multiplier':<42}  {'+3.01%':>8}  {'+8.33%':>9}",
+        f"  {'v6':<4}  {'+ subreddit diversity bonus (this run)':<42}  {v6_alpha_7d:>+7.2f}%  {v6_alpha_30d:>+8.2f}%",
         f"",
-        f"  v5 high-signal (>70)              : 7d = {high[0]:+.2f}%   30d = {high[1]:+.2f}%",
+        f"  v6 high-signal (>70)              : 7d = {high[0]:+.2f}%   30d = {high[1]:+.2f}%",
     ]
 
     # ── 5. Velocity detail ────────────────────────────────────────────────────
@@ -462,9 +458,9 @@ def analyze_signals(conn: sqlite3.Connection) -> str:
             f"  {label:<30} {r[0]:>6,}  {r[1]:>+7.2f}%  {r[2]:>+7.2f}%  {r[3]:>5.1f}%"
         )
 
-    # ── 6. Top 20 highest v4 signal days ──────────────────────────────────────
+    # ── 6. Top 20 highest v6 signal days ──────────────────────────────────────
     lines += ["", "-" * 62,
-              "[6] Top 20 Highest Signal Score Days  (v5, all years)", "-" * 62,
+              "[6] Top 20 Highest Signal Score Days  (v6, all years)", "-" * 62,
               f"  {'Ticker':<8} {'Date':<12} {'Score':>6} {'Mentions':>8} "
               f"{'Vel':>5} {'SB':>3} {'7d Ret':>8} {'30d Ret':>8}",
               "  " + "-" * 64]
@@ -551,39 +547,38 @@ def analyze_signals(conn: sqlite3.Connection) -> str:
                 f"  {label:<28} n={r[0]:,}  7d={r[1]:+.2f}%  30d={r[2]:+.2f}%  win={r[3]:.1f}%"
             )
 
-    # ── 9. Subreddit weight breakdown (v5) ────────────────────────────────────
+    # ── 9. Subreddit diversity bonus breakdown (v6) ───────────────────────────
     lines += ["", "-" * 62,
-              "[9] Subreddit Weight vs Forward Returns  (v5 new)", "-" * 62,
-              "  avg_sub_weight is the weighted avg of post subreddit weights per ticker-day.",
-              f"  {'Bucket':<28} {'N':>6}  {'Avg 7d':>8}  {'Avg 30d':>8}  {'Win%':>6}"]
-    for label, lo, hi in [
-        ("Pure WSB/GME (weight=1.0)",  0.999, 1.001),
-        ("High mix (0.9–1.0)",         0.9,   0.999),
-        ("Mid mix (0.7–0.9)",          0.7,   0.9),
-        ("Low mix (0.5–0.7)",          0.5,   0.7),
-        ("Non-WSB heavy (<0.5)",       0.0,   0.5),
+              "[9] Subreddit Diversity vs Forward Returns  (v6 new)", "-" * 62,
+              "  sub_diversity = unique subreddits mentioning ticker on that day.",
+              "  Bonus: 1=+0pts  2=+5pts  3=+10pts  4+=+15pts",
+              f"  {'Bucket':<30} {'N':>6}  {'Avg 7d':>8}  {'Avg 30d':>8}  {'Win%':>6}"]
+    for label, cond in [
+        ("1 sub  (no bonus, +0)",    "sub_diversity = 1"),
+        ("2 subs (+5 pts)",          "sub_diversity = 2"),
+        ("3 subs (+10 pts)",         "sub_diversity = 3"),
+        ("4+ subs (+15 pts)",        "sub_diversity >= 4"),
     ]:
-        r = conn.execute("""
+        r = conn.execute(f"""
             SELECT COUNT(*),
                    AVG(forward_return_7d)  * 100,
                    AVG(forward_return_30d) * 100,
                    SUM(CASE WHEN forward_return_7d > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*)
             FROM signals
-            WHERE avg_sub_weight >= ? AND avg_sub_weight < ?
-              AND forward_return_7d IS NOT NULL
-        """, (lo, hi)).fetchone()
+            WHERE {cond} AND forward_return_7d IS NOT NULL
+        """).fetchone()
         if r[0]:
             lines.append(
-                f"  {label:<28} {r[0]:>6,}  {r[1]:>+7.2f}%  {r[2]:>+7.2f}%  {r[3]:>5.1f}%"
+                f"  {label:<30} {r[0]:>6,}  {r[1]:>+7.2f}%  {r[2]:>+7.2f}%  {r[3]:>5.1f}%"
             )
 
-    # Distribution of avg_sub_weight in dataset
-    lines += ["", "  avg_sub_weight distribution across scored ticker-days:"]
-    sw_rows = conn.execute(
-        "SELECT AVG(avg_sub_weight), MIN(avg_sub_weight), MAX(avg_sub_weight) FROM signals"
+    # Distribution of sub_diversity in dataset
+    lines += ["", "  sub_diversity distribution across scored ticker-days:"]
+    div_rows = conn.execute(
+        "SELECT AVG(sub_diversity), MIN(sub_diversity), MAX(sub_diversity) FROM signals"
     ).fetchone()
     lines.append(
-        f"    mean={sw_rows[0]:.4f}  min={sw_rows[1]:.4f}  max={sw_rows[2]:.4f}"
+        f"    mean={div_rows[0]:.2f}  min={div_rows[1]}  max={div_rows[2]}"
     )
 
     lines.append("\n" + sep)
