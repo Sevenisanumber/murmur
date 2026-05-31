@@ -1,5 +1,5 @@
 # Murmur — Project Handoff Document
-**Last updated: May 30, 2026**
+**Last updated: May 31, 2026**
 *Drop this into a new chat to continue where we left off.*
 
 ---
@@ -24,6 +24,7 @@ thousands of individuals moving together, forming something larger than any one.
   - Hosts the dashboard, scrapers, cron jobs, Ollama LLM
   - OS drive: 29GB SD card (nearly full, data moved to SSD)
   - Data folder: symlinked to `/mnt/media/wsb-signal-lab-data` (931GB SSD)
+  - Backups: `/mnt/media/backups/murmur/` on the same SSD
   - USB flash drive at `/mnt/ollama` — stores Ollama models (32GB)
 - **Mac (M1 Max, 32GB)** — used for heavy batch jobs (classification)
 - **Ollama models on Pi:** Mistral 7B (used for post classification)
@@ -45,7 +46,7 @@ thousands of individuals moving together, forming something larger than any one.
     calc_returns.py        — calculates 1d/3d/7d/30d forward returns
     classify_posts.py      — Mistral LLM post classifier (Ollama)
     score_signals.py       — v7 signal scorer
-    daily_report.py        — generates daily watchlist report
+    daily_report.py        — generates daily watchlist report (OPTIONS_ACTIVE flag)
     paper_trader.py        — Alpaca paper trading automation
     check_positions.py     — intraday position monitor
     fetch_short_interest.py — yfinance short interest data
@@ -53,36 +54,43 @@ thousands of individuals moving together, forming something larger than any one.
     import_archive.py      — YoloStocks historical archive importer
     notify.py              — Pushover notifications
   scripts/
-    init_db.py             — SQLite schema
+    init_db.py             — SQLite schema (10 tables)
     run_daily.py           — daily pipeline orchestrator
     weekly_stats.py        — Sunday stats summary
     weekly_digest.py       — Friday Claude API feedback digest
+    backup_db.py           — weekly DB backup to SSD, keeps last 4
   dashboard/
     app.py                 — Flask dashboard
     templates/index.html   — dashboard UI
-    static/images/         — Murmur branding assets
+    static/images/         — Murmur branding assets (gitignored)
   data/                    — symlink to /mnt/media/wsb-signal-lab-data
-    wsb.db                 — main SQLite database (1.4GB)
+    wsb.db                 — main SQLite database (~1.5GB)
   logs/                    — all run logs
 ```
 
 ---
 
-## Database State (as of May 30, 2026)
+## Database State (as of May 31, 2026)
 
 - **Total posts:** 1,982,153
 - **Date range:** April 2012 to December 2021
 - **Subreddits:** wallstreetbets, gamestop, stocks, pennystocks, investing, options
 - **Sources:** kaggle (1,151,459) + leukipp (830,694)
-- **Unique authors:** 599,156+
+- **Unique authors:** 698,777
 - **Post classifications:** ~115,000 posts classified by Mistral
   - hype: ~35%, news_reaction: ~28%, thesis: ~28%, options_yolo: ~5%, 
     loss_porn: ~4%, meme: ~3%, other: ~0.2%
 - **Ticker mentions:** 814,317 in post_tickers table
-- **Forward returns:** 687,791 rows with price data
-- **Price rows:** 4,318,636 (Alpaca + yfinance, 2012-2021)
+- **Forward returns:** 692,827 rows with price data
+- **Price rows:** 4,837,311 (Alpaca + yfinance, 2012-2021)
 - **Signal scores (v7):** 47,411 ticker-day rows
-- **Daily mentions (YoloStocks):** 435,755 rows, 2021-2025 + live
+- **Daily mentions (YoloStocks):** 435,920 rows, 2021-2026 + live
+- **Short interest:** table exists, 0 rows (first fetch runs June 1)
+- **Paper trades:** table exists, 0 rows (Phase 5 starts June 2)
+
+### All tables
+`posts`, `tickers`, `post_tickers`, `authors`, `prices`, `daily_mentions`,
+`short_interest`, `paper_trades`, `signals`, `scrape_log`
 
 ---
 
@@ -111,6 +119,25 @@ The scorer assigns a 0-100 score to each ticker-day combination.
 
 ---
 
+## Daily Report Flags
+
+The daily report (scrapers/daily_report.py) shows these flags per ticker:
+
+| Flag | Meaning |
+|------|---------|
+| `HOT` | Velocity 3-5x baseline — historical sweet spot |
+| `EXTREME` | Velocity >5x — reversal risk, never trade |
+| `SLOW_BURN` | Velocity <0.5x — strongest long-term edge |
+| `RISING` | Velocity 1.5-3x — watch |
+| `OPTIONS_ACTIVE` | Ticker in options_yolo posts (Dec 2021 dataset end) |
+| `SQUEEZE_WATCH` | Days-to-cover >5 from short interest data |
+
+**OPTIONS_ACTIVE note:** 70% of r/options live subreddit mentions match the
+OPTIONS_ACTIVE historical flag — r/options sub mention is a meaningful proxy
+for active options interest even without live classification.
+
+---
+
 ## Paper Trading Rules (Phase 4)
 
 - **Entry — HOT_SCORE:** signal score >70 AND velocity 3-5x
@@ -128,11 +155,12 @@ The scorer assigns a 0-100 score to each ticker-day combination.
 ## Automated Schedule (Pi crontab, CDT)
 
 ```
-0 6    * * *   Daily pipeline (fetch → extract → calc → report → trade)
-0 8    * * 0   Weekly stats summary (Sunday)
+0 2    * * 0       Weekly DB backup to SSD (Sunday 2am) — keeps last 4
+0 6    * * *       Daily pipeline (fetch → extract → calc → report → trade)
+0 8    * * 0       Weekly stats summary (Sunday 8am)
 */30 8-14 * * 1-5  Intraday position monitor (every 30 min, weekdays)
 0 15   * * 1-5     Final position check + daily summary notification (4pm ET)
-0 16:30 * * 5      Weekly Claude API digest (Friday after market close)
+30 16  * * 5       Weekly Claude API digest (Friday 4:30pm CDT)
 0 7    1,15 * *    Short interest fetch (1st and 15th of month)
 ```
 
@@ -164,7 +192,8 @@ The scorer assigns a 0-100 score to each ticker-day combination.
 ## Notifications
 
 - **Pushover** — configured on Pi
-  - Fires on: BUY placed, SELL executed, daily summary at 4pm ET
+  - Fires on: BUY placed, SELL executed, daily EOD summary, DB backup failure
+  - Silent on: DB backup success (too noisy)
   - Credentials in .env as PUSHOVER_USER_KEY and PUSHOVER_API_TOKEN
 
 ---
@@ -198,10 +227,40 @@ ANTHROPIC_API_KEY=...
 ## Branding
 
 Project renamed from "WSB Signal Lab" to **Murmur**.
-Logo assets in dashboard/static/images/:
+Logo assets in dashboard/static/images/ (gitignored — local only on Pi):
 - murmur_square_icon.png (favicon)
 - murmur_horizontal_lockup.png (header logo)
 - murmur_dashboard_header_banner.png (alternate)
+
+---
+
+## Git / Deployment Workflow
+
+The Pi's `~/wsb-signal-lab` is a proper git repo synced to GitHub.
+
+```bash
+# Deploy changes to Pi (standard workflow)
+# On Mac: commit and push
+git add <files> && git commit -m "..." && git push origin main
+
+# On Pi: pull
+ssh plex@192.168.1.45 "cd ~/wsb-signal-lab && git pull"
+```
+
+**Pi git config:**
+- Remote: `git@github.com:Sevenisanumber/murmur.git`
+- SSH key: `~/.ssh/github_murmur` (ed25519, deploy key added to GitHub)
+- SSH config routes `github.com` to that key automatically
+- Branch `main` tracks `origin/main`
+
+**Gitignored on purpose:**
+- `data/` — 1.5GB SQLite DB, lives on SSD
+- `logs/` — runtime logs
+- `venv/` — Python virtualenv
+- `.env` — credentials
+- `*.csv` — large Kaggle datasets
+- `dashboard/static/` — branding assets (deployed manually to Pi)
+- `dashboard/index.html` — generated artifact
 
 ---
 
@@ -209,7 +268,6 @@ Logo assets in dashboard/static/images/:
 
 **High priority:**
 - [ ] Reddit API approval still pending — add live scraper when approved
-- [ ] Favicon not rendering in some browsers (code is correct, likely cache)
 - [ ] More 2020 posts need classification to improve signal coverage
 
 **Medium priority:**
@@ -234,7 +292,8 @@ Logo assets in dashboard/static/images/:
 - [x] Phase 4: Paper trading automation + intraday monitoring
 - [x] Phase 4.5: Short interest integration, Pushover notifications
 - [x] Phase 4.6: Weekly Claude API digest
-- [ ] Phase 5: Live signal validation (in progress — starts Monday June 2)
+- [x] Phase 4.7: Infrastructure hardening (git on Pi, DB backups, OPTIONS_ACTIVE flag, stress test)
+- [ ] Phase 5: Live signal validation (starts Monday June 2)
 - [ ] Phase 6: Real money pilot (after consistent paper trading results)
 - [ ] Phase 7: Crypto track
 
@@ -242,8 +301,8 @@ Logo assets in dashboard/static/images/:
 
 ## Next Session Priorities
 
-1. Check Monday's first live paper trades and signal report
-2. Review Friday's first weekly digest
+1. Check Monday's first live paper trades and signal report (June 2)
+2. Review Friday's first weekly digest (June 5)
 3. Add options flow data (Unusual Whales)
 4. Run more 2020 post classification to improve signal coverage
 5. Consider intraday YoloStocks pulls once paper trading validates signals
@@ -256,6 +315,9 @@ Logo assets in dashboard/static/images/:
 # SSH into Pi
 ssh plex@192.168.1.45
 
+# Deploy a change to Pi
+git push origin main && ssh plex@192.168.1.45 "cd ~/wsb-signal-lab && git pull"
+
 # Check dashboard
 http://192.168.1.45:5001
 
@@ -265,23 +327,20 @@ ssh plex@192.168.1.45 "cat ~/wsb-signal-lab/logs/daily_report_$(date +%Y-%m-%d).
 # Check paper trade status
 ssh plex@192.168.1.45 "cd ~/wsb-signal-lab && venv/bin/python scrapers/paper_trader.py --status"
 
-# Check classification progress
-tail -f ~/wsb-signal-lab/logs/classify_nohup.out
+# Run full pipeline manually
+ssh plex@192.168.1.45 "cd ~/wsb-signal-lab && venv/bin/python scripts/run_daily.py"
 
 # Check position monitor log
 ssh plex@192.168.1.45 "tail -20 ~/wsb-signal-lab/logs/cron_positions.log"
 
-# Run full pipeline manually
-ssh plex@192.168.1.45 "cd ~/wsb-signal-lab && venv/bin/python scripts/run_daily.py"
+# Verify latest backup
+ssh plex@192.168.1.45 "ls -lh /mnt/media/backups/murmur/"
 
-# Copy updated database from Mac to Pi
-scp ~/wsb-signal-lab/data/wsb.db plex@192.168.1.45:~/wsb-signal-lab/data/wsb.db
-
-# Start Claude Code
-cd ~/wsb-signal-lab && claude
+# Check classification progress
+ssh plex@192.168.1.45 "tail -f ~/wsb-signal-lab/logs/classify_nohup.out"
 ```
 
 ---
 
-*Built over two days, May 29-30 2026, with Claude Sonnet.*
+*Built over three days, May 29-31 2026, with Claude Sonnet.*
 *"Like a murmuration — thousands of voices forming a single signal."*
