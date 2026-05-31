@@ -6,7 +6,7 @@ Copies data/wsb.db to /mnt/media/backups/murmur/wsb_YYYY-MM-DD.db,
 retains the 4 most recent backups, and logs the result.
 Sends a Pushover alert only on failure.
 
-Cron: 0 2 * * 0  (Sunday 2am CDT)
+Cron: 0 17 * * 5  (Friday 5pm CDT, after weekly digest at 4:30pm)
 """
 
 import logging

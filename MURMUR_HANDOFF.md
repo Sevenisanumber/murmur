@@ -160,7 +160,7 @@ for active options interest even without live classification.
 ## Automated Schedule (Pi crontab, CDT)
 
 ```
-0 2    * * 0       Weekly DB backup to SSD (Sunday 2am) — keeps last 4
+0 17   * * 5       Weekly DB backup to SSD (Friday 5pm CDT, after digest) — keeps last 4
 0 6    * * *       Daily pipeline (fetch → extract → calc → report → trade)
 0 8    * * 0       Weekly stats summary (Sunday 8am)
 */30 8-14 * * 1-5  Intraday position monitor (every 30 min, weekdays)
