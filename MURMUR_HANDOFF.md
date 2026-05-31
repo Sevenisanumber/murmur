@@ -150,6 +150,11 @@ for active options interest even without live classification.
 - **Exit:** +15% take profit, -8% stop loss, 7 days held
 - **No shorting in v1**
 
+**Market closed / weekend handling:**
+- `paper_trader.py` — if market is closed and not `--dry-run`, checks exits only (no new entries); returns early after exit check
+- `check_positions.py` — fast local gate using `pytz` America/New_York; exits silently (code 0) on weekends and outside 9:30am–4:00pm ET, no API call made
+- `--dry-run` bypasses the market-open gate entirely — signals are evaluated regardless of day/time
+
 ---
 
 ## Automated Schedule (Pi crontab, CDT)
@@ -192,9 +197,29 @@ for active options interest even without live classification.
 ## Notifications
 
 - **Pushover** — configured on Pi
-  - Fires on: BUY placed, SELL executed, daily EOD summary, DB backup failure
-  - Silent on: DB backup success (too noisy)
   - Credentials in .env as PUSHOVER_USER_KEY and PUSHOVER_API_TOKEN
+
+| Event | Fires? | Title |
+|-------|--------|-------|
+| Morning briefing (daily, after report) | ✅ | Murmur Morning |
+| BUY placed | ✅ | Murmur |
+| SELL executed | ✅ | Murmur |
+| EOD portfolio summary (4pm ET weekdays) | ✅ | WSB Lab Daily Summary |
+| DB backup failure | ✅ | WSB Lab Backup FAILED |
+| DB backup success | ❌ | — (too noisy) |
+
+**Morning briefing format** (sent after daily_report step in run_daily.py):
+```
+Murmur MM-DD | N tickers
+🔥 TSLA 89.2 HOT OPTIONS_ACTIVE
+📈 SPCE 75.2 RISING
+📈 ADBE 73.3 RISING
+[Also HOT: TICKER ...  — if HOT tickers exist outside top 3]
+Slow burns: N | Squeeze: N | Opts: N
+```
+Implemented in `scrapers/notify.py` → `send_morning_briefing(report_text)`.
+Parses the text report; does not require Pushover credentials to generate
+the message (returns False silently if credentials missing).
 
 ---
 
@@ -292,7 +317,7 @@ ssh plex@192.168.1.45 "cd ~/wsb-signal-lab && git pull"
 - [x] Phase 4: Paper trading automation + intraday monitoring
 - [x] Phase 4.5: Short interest integration, Pushover notifications
 - [x] Phase 4.6: Weekly Claude API digest
-- [x] Phase 4.7: Infrastructure hardening (git on Pi, DB backups, OPTIONS_ACTIVE flag, stress test)
+- [x] Phase 4.7: Infrastructure hardening (git on Pi, DB backups, OPTIONS_ACTIVE flag, morning briefing, stress test)
 - [ ] Phase 5: Live signal validation (starts Monday June 2)
 - [ ] Phase 6: Real money pilot (after consistent paper trading results)
 - [ ] Phase 7: Crypto track
@@ -342,5 +367,5 @@ ssh plex@192.168.1.45 "tail -f ~/wsb-signal-lab/logs/classify_nohup.out"
 
 ---
 
-*Built over three days, May 29-31 2026, with Claude Sonnet.*
+*Built over May 29-31 2026, with Claude Sonnet.*
 *"Like a murmuration — thousands of voices forming a single signal."*
