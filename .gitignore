@@ -22,6 +22,10 @@ logs/
 # macOS
 .DS_Store
 
+# Dashboard build artifacts
+dashboard/static/
+dashboard/index.html
+
 # Editor / tooling
 .claude/
 *.swp
