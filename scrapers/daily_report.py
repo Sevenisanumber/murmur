@@ -312,7 +312,7 @@ def format_report(rows: list[dict], date: str, velocity_note: str, top: int) -> 
 
     lines = [
         sep,
-        f"WSB Signal Lab  —  Daily Watchlist  {date} ({day_name})",
+        f"Murmur  —  Daily Watchlist  {date} ({day_name})",
         f"Generated: {now}  |  Active tickers: {len(rows)}  |  Mentions: {total_mentions:,}",
         sep,
     ]

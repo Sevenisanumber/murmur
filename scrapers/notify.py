@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Pushover notification helper — WSB Signal Lab
+Pushover notification helper — Murmur
 
 Uses stdlib only (urllib). Reads credentials from the environment:
   PUSHOVER_USER_KEY   — your Pushover user key
@@ -25,7 +25,7 @@ import urllib.request
 _PUSHOVER_URL = 'https://api.pushover.net/1/messages.json'
 
 
-def send_pushover(message: str, title: str = 'WSB Signal Lab') -> bool:
+def send_pushover(message: str, title: str = 'Murmur') -> bool:
     """POST a Pushover notification. Returns True on success, False on any failure."""
     user_key  = os.getenv('PUSHOVER_USER_KEY')
     api_token = os.getenv('PUSHOVER_API_TOKEN')
@@ -61,11 +61,13 @@ def send_morning_briefing(report_text: str) -> bool:
         'NORMAL':    '📊',
     }
 
-    # ── Date (MM-DD) ─────────────────────────────────────────────────────────
+    # ── Date (MM-DD) — match "Daily Watchlist YYYY-MM-DD" anywhere in header ──
     dm = re.search(r'Daily Watchlist\s+\d{4}-(\d{2})-(\d{2})', report_text)
     date_short = f'{dm.group(1)}-{dm.group(2)}' if dm else '??-??'
 
-    # ── Active ticker count ───────────────────────────────────────────────────
+    # ── Active ticker count — from "Active tickers: N" in the header line ────
+    # (the SUMMARY section has "Active tickers : N" with a space before the
+    #  colon, so this regex only matches the header)
     tm = re.search(r'Active tickers:\s*(\d+)', report_text)
     n_tickers = tm.group(1) if tm else '?'
 
@@ -144,8 +146,8 @@ if __name__ == '__main__':
     load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env'))
 
     ok = send_pushover(
-        'Test notification from WSB Signal Lab — notify.py is wired up correctly.',
-        title='WSB Lab Test',
+        'Test notification from Murmur — notify.py is wired up correctly.',
+        title='Murmur Test',
     )
     if ok:
         print('OK  Test notification sent.')
