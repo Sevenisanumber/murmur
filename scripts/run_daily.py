@@ -96,8 +96,9 @@ def main() -> int:
     from scrapers.extract_tickers      import run_extraction
     from scrapers.calc_returns         import calc_returns
     from scrapers.fetch_daily_mentions import fetch_daily_mentions
+    from scrapers.fetch_earnings       import run as fetch_earnings_run
     from scrapers.daily_report         import generate_report
-    from scrapers.paper_trader         import run_trading
+    from scrapers.paper_trader         import run_trading, make_api, get_market_regime
     from scrapers.notify               import send_morning_briefing
 
     def run_daily_report():
@@ -109,13 +110,27 @@ def main() -> int:
             f.write('\n')
         log.info(f'Daily report written to {out}')
         print(report)
-        ok = send_morning_briefing(report)
+        try:
+            regime, spy_price, sma50 = get_market_regime(make_api())
+            if spy_price:
+                log.info(f'[REGIME] SPY=${spy_price:.2f} 50-SMA=${sma50:.2f} → {regime}')
+            else:
+                log.info(f'[REGIME] {regime} (SPY price unavailable — data insufficient or fetch failed)')
+        except Exception as e:
+            log.warning(f'[REGIME] check failed — regime unknown: {e}')
+            regime = ''
+        ok = send_morning_briefing(report, regime=regime)
         log.info(f'Morning briefing: {"sent" if ok else "skipped (no Pushover credentials)"}')
         return 1  # non-zero so run_step counts it as a "row"
 
+    def run_fetch_earnings():
+        date = datetime.now().strftime('%Y-%m-%d')
+        near = fetch_earnings_run(date=date)
+        return len(near)
+
     def run_paper_trader():
         date = datetime.now().strftime('%Y-%m-%d')
-        run_trading(date=date, db_path=DB_PATH)
+        run_trading(date=date, db_path=DB_PATH, exits_only=True)
         return 1
 
     steps = [
@@ -123,6 +138,7 @@ def main() -> int:
         ('extract_tickers',      run_extraction),
         ('calc_returns',         calc_returns),
         ('fetch_daily_mentions', fetch_daily_mentions),
+        ('fetch_earnings',       run_fetch_earnings),
         ('daily_report',         run_daily_report),
         ('paper_trader',         run_paper_trader),
     ]

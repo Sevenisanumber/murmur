@@ -9,7 +9,8 @@ Trading rules:
   BUY: score > 60  AND vel_tag == 'SLOW_BURN' (<0.5x velocity)
   SKIP: EXTREME velocity (>5x) — always
   Max 3 open positions, $100 per trade, $500 max total exposure
-  Exit: 7 calendar days OR +15% profit OR -8% stop loss
+  EARNINGS_NEAR: position halved to $50 if earnings within 5 days (don't skip — size down)
+  Exit: 7 days (HOT/SQUEEZE) OR 25 days (SLOW_BURN) OR +15% profit OR -8% stop loss
 
 Hard limits:
   Never trade price < $5
@@ -59,9 +60,10 @@ POSITION_SIZE      = 100.0   # dollars per trade
 MAX_TOTAL_EXPOSURE = 500.0   # hard cap across all open positions
 MIN_PRICE          = 5.0     # penny stock filter
 
-TAKE_PROFIT_PCT = 0.15    # +15%
-STOP_LOSS_PCT   = 0.08    # -8%
-MAX_HOLD_DAYS   = 7
+TAKE_PROFIT_PCT        = 0.15    # +15%
+STOP_LOSS_PCT          = 0.08    # -8%
+MAX_HOLD_DAYS          = 7       # HOT / SQUEEZE_WATCH entries
+MAX_HOLD_DAYS_SLOW_BURN = 25     # SLOW_BURN entries — edge is at ~30 days
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
@@ -254,13 +256,16 @@ def check_exits(api, conn, today: str, dry_run: bool = False) -> int:
         pnl_pct    = (current_price - entry_price) / entry_price * 100
         days_held  = (datetime.strptime(today, '%Y-%m-%d')
                       - datetime.strptime(entry_date, '%Y-%m-%d')).days
+        max_hold   = (MAX_HOLD_DAYS_SLOW_BURN
+                      if pos['signal_type'] == 'SLOW_BURN'
+                      else MAX_HOLD_DAYS)
 
         exit_reason = None
         if pnl_pct >= TAKE_PROFIT_PCT * 100:
             exit_reason = 'take_profit'
         elif pnl_pct <= -STOP_LOSS_PCT * 100:
             exit_reason = 'stop_loss'
-        elif days_held >= MAX_HOLD_DAYS:
+        elif days_held >= max_hold:
             exit_reason = 'time_exit'
 
         if exit_reason:
@@ -279,7 +284,7 @@ def check_exits(api, conn, today: str, dry_run: bool = False) -> int:
             )
             sign = '+' if pnl >= 0 else ''
             log.info(
-                f'[SELL] {ticker} | reason={exit_reason} | days_held={days_held} | '
+                f'[SELL] {ticker} | reason={exit_reason} | days_held={days_held}/{max_hold} | '
                 f'entry=${entry_price:.2f} exit=${actual_exit_price:.2f} | '
                 f'P&L={sign}${pnl:.2f} ({sign}{pnl_pct_final:.1f}%)'
                 + (' [DRY RUN]' if dry_run else '')
@@ -292,9 +297,11 @@ def check_exits(api, conn, today: str, dry_run: bool = False) -> int:
                 )
             closed += 1
         else:
+            days_left = max_hold - days_held
             sign = '+' if pnl_pct >= 0 else ''
             log.info(
-                f'[HOLD] {ticker} | days_held={days_held} | '
+                f'[HOLD] {ticker} | signal={pos["signal_type"]} | '
+                f'days_held={days_held}/{max_hold} ({days_left}d left) | '
                 f'entry=${entry_price:.2f} current=${current_price:.2f} | '
                 f'unrealized={sign}{pnl_pct:.1f}%'
             )
@@ -302,10 +309,67 @@ def check_exits(api, conn, today: str, dry_run: bool = False) -> int:
     return closed
 
 
+# ── Market regime ─────────────────────────────────────────────────────────────
+
+_SPY_SMA_WINDOW = 50
+_SPY_FETCH_BARS = 60   # 60 trading days → plenty of runway for 50-day SMA
+
+
+def get_market_regime(api) -> tuple[str, float, float]:
+    """
+    Fetch SPY daily closes, compute 50-day SMA, return (regime, spy_price, sma50).
+    Returns ('BULLISH', 0.0, 0.0) on any data failure — fail open so a transient
+    Alpaca hiccup doesn't silently kill all HOT_SCORE entries.
+    """
+    try:
+        bars = api.get_bars('SPY', '1Day', limit=_SPY_FETCH_BARS).df
+        if bars.empty or len(bars) < _SPY_SMA_WINDOW:
+            log.warning(
+                f'[REGIME] SPY data insufficient ({len(bars)} bars) — defaulting to BULLISH'
+            )
+            return 'BULLISH', 0.0, 0.0
+        closes    = bars['close'].values
+        spy_price = float(closes[-1])
+        sma50     = float(closes[-_SPY_SMA_WINDOW:].mean())
+        if spy_price >= sma50:
+            log.info(
+                f'[REGIME] SPY=${spy_price:.2f} 50-SMA=${sma50:.2f} | '
+                f'Market regime: BULLISH — entries enabled'
+            )
+            return 'BULLISH', spy_price, sma50
+        else:
+            log.info(
+                f'[REGIME] SPY=${spy_price:.2f} 50-SMA=${sma50:.2f} | '
+                f'Market regime: BEARISH — HOT_SCORE entries suppressed'
+            )
+            return 'BEARISH', spy_price, sma50
+    except Exception as e:
+        log.warning(f'[REGIME] SPY fetch failed ({e}) — defaulting to BULLISH')
+        return 'BULLISH', 0.0, 0.0
+
+
 # ── Short interest / squeeze watch ───────────────────────────────────────────
 
 SQUEEZE_DTC_MIN   = 5.0   # same threshold as daily_report
 SQUEEZE_BONUS     = 10.0  # score bonus for SQUEEZE_WATCH + HOT
+
+
+def load_earnings_near(conn, date: str, window: int = 5) -> set[str]:
+    """Return tickers with earnings within `window` calendar days of date."""
+    try:
+        cutoff = (
+            datetime.strptime(date, '%Y-%m-%d') + timedelta(days=window)
+        ).strftime('%Y-%m-%d')
+        rows = conn.execute(
+            """SELECT ticker FROM earnings_calendar
+               WHERE earnings_date IS NOT NULL
+                 AND earnings_date >= ?
+                 AND earnings_date <= ?""",
+            (date, cutoff),
+        ).fetchall()
+        return {r[0] for r in rows}
+    except Exception:
+        return set()
 
 
 def load_squeeze_watch(conn, dtc_min: float = SQUEEZE_DTC_MIN) -> set[str]:
@@ -347,13 +411,21 @@ def load_signals(date: str, db_path: str = DB_PATH) -> list[dict]:
 
 # ── Entry logic ───────────────────────────────────────────────────────────────
 
-def run_trading(date: str, db_path: str = DB_PATH, dry_run: bool = False) -> None:
+def run_trading(date: str, db_path: str = DB_PATH, dry_run: bool = False,
+                exits_only: bool = False) -> None:
     import sqlite3
 
     api  = make_api()
     conn = sqlite3.connect(db_path)
     conn.execute('PRAGMA journal_mode=WAL')
     init_paper_trades_table(conn)
+
+    if exits_only:
+        log.info(f'=== Paper trader (exits only) | date={date} dry_run={dry_run} ===')
+        check_exits(api, conn, today=date, dry_run=dry_run)
+        conn.close()
+        log.info('=== Paper trader done (exits only) ===')
+        return
 
     log.info(f'=== Paper trader starting | date={date} dry_run={dry_run} ===')
 
@@ -366,6 +438,9 @@ def run_trading(date: str, db_path: str = DB_PATH, dry_run: bool = False) -> Non
         return
 
     check_exits(api, conn, today=date, dry_run=dry_run)
+
+    # ── 1b. Market regime check ───────────────────────────────────────────────
+    regime, _spy, _sma = get_market_regime(api)
 
     # ── 2. Load today's signals ───────────────────────────────────────────────
     rows = load_signals(date, db_path)
@@ -380,6 +455,11 @@ def run_trading(date: str, db_path: str = DB_PATH, dry_run: bool = False) -> Non
     squeeze_watch = load_squeeze_watch(conn)
     if squeeze_watch:
         log.info(f'Squeeze watch: {len(squeeze_watch)} tickers with DtC > {SQUEEZE_DTC_MIN}')
+
+    # ── 2c. Load earnings near set ────────────────────────────────────────────
+    earnings_near = load_earnings_near(conn, date)
+    if earnings_near:
+        log.info(f'Earnings near: {sorted(earnings_near)} — positions will be sized to ${POSITION_SIZE/2:.0f}')
 
     # ── 3. Build context for entry decisions ──────────────────────────────────
     open_positions  = load_open_positions(conn)
@@ -425,6 +505,20 @@ def run_trading(date: str, db_path: str = DB_PATH, dry_run: bool = False) -> Non
             log.debug(f'[SKIP] {ticker} | score={score:.1f} tag={effective_tag} — no entry rule matched')
             continue
 
+        # Regime filter: HOT_SCORE suppressed in bearish markets; SLOW_BURN and SQUEEZE_WATCH unaffected
+        if signal_type == 'HOT_SCORE' and regime == 'BEARISH':
+            log.info(f'[SKIP] {ticker} | HOT_SCORE suppressed — market regime: BEARISH')
+            continue
+
+        # Earnings sizing: halve position if earnings within 5 days
+        entry_size = POSITION_SIZE
+        if ticker in earnings_near:
+            entry_size = POSITION_SIZE / 2
+            log.warning(
+                f'[EARNINGS_NEAR] {ticker} | earnings within 5 days — '
+                f'sizing to ${entry_size:.0f} (half normal)'
+            )
+
         # Position limit checks
         if ticker in held_tickers:
             log.info(f'[SKIP] {ticker} | signal={signal_type} score={score:.1f} | already holding')
@@ -434,10 +528,10 @@ def run_trading(date: str, db_path: str = DB_PATH, dry_run: bool = False) -> Non
             log.info(f'[SKIP] {ticker} | signal={signal_type} | max positions ({MAX_POSITIONS}) reached')
             continue
 
-        if total_exposure + POSITION_SIZE > MAX_TOTAL_EXPOSURE:
+        if total_exposure + entry_size > MAX_TOTAL_EXPOSURE:
             log.info(
                 f'[SKIP] {ticker} | signal={signal_type} | '
-                f'exposure limit: ${total_exposure:.2f}+${POSITION_SIZE:.0f} > ${MAX_TOTAL_EXPOSURE:.0f}'
+                f'exposure limit: ${total_exposure:.2f}+${entry_size:.0f} > ${MAX_TOTAL_EXPOSURE:.0f}'
             )
             continue
 
@@ -452,7 +546,7 @@ def run_trading(date: str, db_path: str = DB_PATH, dry_run: bool = False) -> Non
             continue
 
         # Place order
-        shares = POSITION_SIZE / current_price
+        shares = entry_size / current_price
         order  = place_buy_order(api, ticker, shares, dry_run=dry_run)
         if order is None:
             log.error(f'[BUY-FAIL] {ticker} | order rejected')
@@ -466,26 +560,27 @@ def run_trading(date: str, db_path: str = DB_PATH, dry_run: bool = False) -> Non
 
         trade_id = record_trade(
             conn, ticker, signal_type, effective_score, velocity, effective_tag,
-            date, actual_entry_price, actual_shares, POSITION_SIZE,
+            date, actual_entry_price, actual_shares, entry_size,
         )
 
         held_tickers.add(ticker)
         open_count      += 1
-        total_exposure  += POSITION_SIZE
+        total_exposure  += entry_size
 
-        squeeze_tag = ' [SQUEEZE_WATCH]' if is_squeeze else ''
+        earnings_tag = ' [EARNINGS_NEAR]' if ticker in earnings_near else ''
+        squeeze_tag  = ' [SQUEEZE_WATCH]' if is_squeeze else ''
         log.info(
             f'[BUY] {ticker} | signal={signal_type} | score={effective_score:.1f} | '
             f'vel={velocity:.1f}x | entry=${actual_entry_price:.2f} | '
-            f'shares={actual_shares:.4f} | size=${POSITION_SIZE:.0f} | trade_id={trade_id}'
-            + squeeze_tag
+            f'shares={actual_shares:.4f} | size=${entry_size:.0f} | trade_id={trade_id}'
+            + squeeze_tag + earnings_tag
             + (' [DRY RUN]' if dry_run else '')
         )
         if not dry_run:
             send_pushover(
                 f'BUY {ticker} @ ${actual_entry_price:.2f} | '
-                f'Signal: {signal_type} {effective_score:.1f}{squeeze_tag} | '
-                f'Size: ${POSITION_SIZE:.0f}'
+                f'Signal: {signal_type} {effective_score:.1f}{squeeze_tag}{earnings_tag} | '
+                f'Size: ${entry_size:.0f}'
             )
 
     conn.close()
@@ -516,8 +611,8 @@ def show_status(db_path: str = DB_PATH) -> None:
     print(f'\n── OPEN POSITIONS ({len(open_positions)}/{MAX_POSITIONS}) ────────────────────────')
     if open_positions:
         print(f"  {'Ticker':<6}  {'Signal':<12}  {'Entry':>7}  {'Current':>8}  "
-              f"{'P&L $':>7}  {'P&L %':>7}  {'Days':>4}  {'Score':>5}")
-        print('  ' + '─' * 66)
+              f"{'P&L $':>7}  {'P&L %':>7}  {'Held':>5}  {'Left':>5}  {'Score':>5}")
+        print('  ' + '─' * 72)
         total_cost        = 0.0
         total_unrealized  = 0.0
         for pos in open_positions:
@@ -531,6 +626,10 @@ def show_status(db_path: str = DB_PATH) -> None:
             current_price = get_current_price(api, ticker)
             days_held = (datetime.strptime(today, '%Y-%m-%d')
                          - datetime.strptime(entry_date, '%Y-%m-%d')).days
+            max_hold  = (MAX_HOLD_DAYS_SLOW_BURN
+                         if signal_type == 'SLOW_BURN'
+                         else MAX_HOLD_DAYS)
+            days_left = max(0, max_hold - days_held)
 
             if current_price is not None:
                 pnl     = (current_price - entry_price) * shares
@@ -547,10 +646,10 @@ def show_status(db_path: str = DB_PATH) -> None:
             print(
                 f"  {ticker:<6}  {signal_type:<12}  ${entry_price:>6.2f}  "
                 f"{cur_str:>8}  {sign}${pnl:>6.2f}  {sign}{pnl_pct:>6.1f}%  "
-                f"{days_held:>4}d  {score:>5.1f}"
+                f"{days_held:>3}d  {days_left:>3}d  {score:>5.1f}"
             )
 
-        print('  ' + '─' * 66)
+        print('  ' + '─' * 72)
         sign = '+' if total_unrealized >= 0 else ''
         print(f"  Total exposure: ${total_cost:.2f}  |  Unrealized P&L: {sign}${total_unrealized:.2f}")
     else:
@@ -618,9 +717,10 @@ def show_status(db_path: str = DB_PATH) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description='WSB paper trader')
-    parser.add_argument('--date',    default=None,       help='Date YYYY-MM-DD (default: today)')
-    parser.add_argument('--status',  action='store_true', help='Show open positions and P&L')
-    parser.add_argument('--dry-run', action='store_true', help='Evaluate signals without placing orders')
+    parser.add_argument('--date',        default=None,        help='Date YYYY-MM-DD (default: today)')
+    parser.add_argument('--status',      action='store_true', help='Show open positions and P&L')
+    parser.add_argument('--dry-run',     action='store_true', help='Evaluate signals without placing orders')
+    parser.add_argument('--exits-only',  action='store_true', help='Only process exits (stop loss/take profit), skip new entries')
     args = parser.parse_args()
 
     if args.status:
@@ -628,7 +728,7 @@ def main() -> None:
         return
 
     date = args.date or datetime.now().strftime('%Y-%m-%d')
-    run_trading(date=date, db_path=DB_PATH, dry_run=args.dry_run)
+    run_trading(date=date, db_path=DB_PATH, dry_run=args.dry_run, exits_only=args.exits_only)
 
 
 if __name__ == '__main__':
