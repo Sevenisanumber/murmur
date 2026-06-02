@@ -315,22 +315,31 @@ _SPY_SMA_WINDOW = 50
 _SPY_FETCH_BARS = 60   # 60 trading days → plenty of runway for 50-day SMA
 
 
-def get_market_regime(api) -> tuple[str, float, float]:
+def get_market_regime(db_path: str = DB_PATH) -> tuple[str, float, float]:
     """
-    Fetch SPY daily closes, compute 50-day SMA, return (regime, spy_price, sma50).
+    Read SPY daily closes from the local prices table, compute 50-day SMA,
+    return (regime, spy_price, sma50).
     Returns ('BULLISH', 0.0, 0.0) on any data failure — fail open so a transient
-    Alpaca hiccup doesn't silently kill all HOT_SCORE entries.
+    DB issue doesn't silently kill all HOT_SCORE entries.
     """
+    import sqlite3
     try:
-        bars = api.get_bars('SPY', '1Day', limit=_SPY_FETCH_BARS).df
-        if bars.empty or len(bars) < _SPY_SMA_WINDOW:
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute(
+            """SELECT close FROM prices
+               WHERE ticker = 'SPY' AND close IS NOT NULL
+               ORDER BY date DESC LIMIT ?""",
+            (_SPY_FETCH_BARS,),
+        ).fetchall()
+        conn.close()
+        if len(rows) < _SPY_SMA_WINDOW:
             log.warning(
-                f'[REGIME] SPY data insufficient ({len(bars)} bars) — defaulting to BULLISH'
+                f'[REGIME] SPY data insufficient ({len(rows)} bars) — defaulting to BULLISH'
             )
             return 'BULLISH', 0.0, 0.0
-        closes    = bars['close'].values
+        closes    = [r[0] for r in reversed(rows)]   # chronological order
         spy_price = float(closes[-1])
-        sma50     = float(closes[-_SPY_SMA_WINDOW:].mean())
+        sma50     = float(sum(closes[-_SPY_SMA_WINDOW:]) / _SPY_SMA_WINDOW)
         if spy_price >= sma50:
             log.info(
                 f'[REGIME] SPY=${spy_price:.2f} 50-SMA=${sma50:.2f} | '
@@ -440,7 +449,7 @@ def run_trading(date: str, db_path: str = DB_PATH, dry_run: bool = False,
     check_exits(api, conn, today=date, dry_run=dry_run)
 
     # ── 1b. Market regime check ───────────────────────────────────────────────
-    regime, _spy, _sma = get_market_regime(api)
+    regime, _spy, _sma = get_market_regime(db_path)
 
     # ── 2. Load today's signals ───────────────────────────────────────────────
     rows = load_signals(date, db_path)

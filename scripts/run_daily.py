@@ -98,7 +98,7 @@ def main() -> int:
     from scrapers.fetch_daily_mentions import fetch_daily_mentions
     from scrapers.fetch_earnings       import run as fetch_earnings_run
     from scrapers.daily_report         import generate_report
-    from scrapers.paper_trader         import run_trading, make_api, get_market_regime
+    from scrapers.paper_trader         import run_trading, get_market_regime
     from scrapers.notify               import send_morning_briefing
 
     def run_daily_report():
@@ -111,7 +111,7 @@ def main() -> int:
         log.info(f'Daily report written to {out}')
         print(report)
         try:
-            regime, spy_price, sma50 = get_market_regime(make_api())
+            regime, spy_price, sma50 = get_market_regime(DB_PATH)
             if spy_price:
                 log.info(f'[REGIME] SPY=${spy_price:.2f} 50-SMA=${sma50:.2f} → {regime}')
             else:
