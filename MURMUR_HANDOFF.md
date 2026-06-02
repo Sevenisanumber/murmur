@@ -285,28 +285,9 @@ Logo assets in dashboard/static/images/:
 
 ## Known Issues / Todo List
 
-**High priority:**
-- [ ] Reddit API approval pending (submitted May 31) — add live scraper when approved
-- [ ] Favicon not rendering in some browsers (code correct, likely cache issue)
+See **TODO.md** in the project root for the full task list (high / medium / low / ideas).
 
-**Medium priority:**
-- [ ] Options flow data — Unusual Whales API requires paid subscription ($250/mo),
-      consider Alpaca options chain as free alternative
-- [ ] Intraday YoloStocks pulls (every 30 min during market hours) for Phase 5
-      — wait until paper trading validates daily signals first
-- [ ] Crypto track via separate exchange API (Coinbase Advanced or Kraken)
-- [ ] Subreddit-specific classifier tuning (r/options posts need different labels)
-- [ ] News sentiment from financial RSS feeds
-- [ ] More 2020 post classification to improve signal coverage
-- [ ] Incorporate is_bullish into signal scorer once classification batch
-      completes (est. Friday)
-- [ ] Validate v7 signal alpha against 2022-2025 data once price fetch completes
-- [ ] Copy updated DB from Mac back to Pi after classification batch finishes
-
-**Lower priority:**
-- [ ] Fear and greed index integration
-- [ ] Real money pilot after consistent paper trading results
-- [ ] Rename ~/wsb-signal-lab directory to ~/murmur on Pi (low priority, risky)
+Current open items as of June 2, 2026: Reddit API approval pending, favicon cache issue, is_bullish scorer integration, 2022–2025 signal validation, adaptive intraday entry checks, and several medium/low priority enhancements.
 
 ---
 
