@@ -68,7 +68,7 @@ def main() -> None:
     except Exception as e:
         log.error(f'Backup FAILED: {e}')
         from scrapers.notify import send_pushover
-        send_pushover(f'DB backup failed: {e}', title='WSB Lab Backup FAILED')
+        send_pushover(f'DB backup failed: {e}', title='Murmur Backup FAILED')
         sys.exit(1)
 
     log.info('=== DB backup complete ===')

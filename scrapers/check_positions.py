@@ -108,7 +108,7 @@ def send_daily_summary(api, conn: sqlite3.Connection, today: str) -> None:
         f"Total P&L: {sgn(total_pnl)}${total_pnl:.2f}"
     )
     log.info(f'[SUMMARY] {msg}')
-    sent = send_pushover(msg, title='WSB Lab Daily Summary')
+    sent = send_pushover(msg, title='Murmur Daily Summary')
     log.info(f'[SUMMARY] Notification {"sent" if sent else "failed — check credentials"}')
 
 

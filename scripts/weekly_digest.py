@@ -514,8 +514,8 @@ def main() -> None:
     # ── 4. Pushover notification ──────────────────────────────────────────────
     from scrapers.notify import send_pushover
     ok = send_pushover(
-        f'WSB Lab Weekly Digest ready — check logs/weekly_digest_{today}.txt',
-        title='WSB Lab Weekly Digest',
+        f'Murmur Weekly Digest ready — check logs/weekly_digest_{today}.txt',
+        title='Murmur Weekly Digest',
     )
     log.info(f'Pushover: {"sent" if ok else "failed"}')
 
