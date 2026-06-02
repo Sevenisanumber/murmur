@@ -52,6 +52,7 @@ thousands of individuals moving together, forming something larger than any one.
     check_positions.py     — intraday position monitor
     fetch_short_interest.py — yfinance short interest data
     fetch_daily_mentions.py — live YoloStocks data fetcher
+    fetch_earnings.py      — yfinance earnings calendar for active tickers
     import_archive.py      — YoloStocks historical archive importer
     notify.py              — Pushover notifications (incl. morning briefing)
   scripts/
@@ -78,9 +79,13 @@ thousands of individuals moving together, forming something larger than any one.
 - **Subreddits:** wallstreetbets, gamestop, stocks, pennystocks, investing, options
 - **Sources:** kaggle (1,151,459) + leukipp (830,694)
 - **Unique authors:** 698,777
-- **Post classifications:** ~115,000 posts classified by Mistral
+- **Post classifications:** ~115,050 posts classified by Mistral
   - hype: ~35%, news_reaction: ~28%, thesis: ~28%, options_yolo: ~5%,
     loss_porn: ~4%, meme: ~3%, other: ~0.2%
+  - 487,468 unclassified ticker-mention posts remain; background batch job
+    running on Mac via `--priority-unclassified` (ordered by score DESC)
+  - `posts` table now has `is_bullish INTEGER` column (1=bullish, 0=bearish,
+    NULL=neutral/unclear); populated on new classifications going forward
 - **Ticker mentions:** 814,317 in post_tickers table
 - **Forward returns:** 687,791 rows with price data
 - **Price rows:** 4,318,636 (Alpaca + yfinance, 2012-2021)
@@ -113,6 +118,11 @@ The scorer assigns a 0-100 score to each ticker-day combination.
 - Slow burn + hype: below-avg velocity + hype posts = +2.36% 7d, +4.99% 30d
 - 1-25% thesis mix: sweet spot returning +3.68% 7d, +13.23% 30d
 
+**Upcoming (not yet in scorer):**
+- `is_bullish` direction tracking (1=bullish, 0=bearish, NULL=neutral) is now
+  captured on all new classifications. Will be incorporated into scorer weights
+  in a future version once the classification batch completes.
+
 ---
 
 ## Daily Report Flags
@@ -125,6 +135,7 @@ The daily watchlist report shows these signal flags per ticker:
 - **SLOW_BURN** — velocity <0.5x, historical +7.29% avg 30d, 57.2% win rate
 - **SQUEEZE_WATCH** — days-to-cover >5 AND active WSB mentions
 - **OPTIONS_ACTIVE** — ticker appeared in options_yolo classified posts
+- **EARNINGS_NEAR** — earnings within 5 days; position size reduced to $50
 
 ---
 
@@ -133,13 +144,18 @@ The daily watchlist report shows these signal flags per ticker:
 - **Entry — HOT_SCORE:** signal score >70 AND velocity 3-5x
 - **Entry — SLOW_BURN:** signal score >60 AND velocity <0.5x
 - **Entry — SQUEEZE_WATCH bonus:** +10 score if days-to-cover >5
+- **Market regime filter:** HOT_SCORE entries suppressed when SPY is below its
+  50-day SMA (BEARISH regime). SLOW_BURN and SQUEEZE_WATCH are unaffected.
+  Fails open to BULLISH if Alpaca data is unavailable.
 - **Never trade:** EXTREME velocity (>5x), penny stocks (<$5), no Alpaca data
 - **Market closed handling:** paper_trader checks Alpaca clock API; exits cleanly
   on weekends and holidays — expected behavior, not an error
-- **Position size:** $100 per trade
+- **Position size:** $100 per trade ($50 if EARNINGS_NEAR)
 - **Max positions:** 3 open simultaneously
 - **Max exposure:** $500 total
-- **Exit:** +15% take profit, -8% stop loss, 7 days held
+- **Exit — HOT_SCORE / SQUEEZE_WATCH:** +15% take profit, -8% stop loss, 7 days held
+- **Exit — SLOW_BURN:** +15% take profit, -8% stop loss, 25 days held
+  (edge is at 30d, not 7d — was being exited too early before Phase 4.8)
 - **No shorting in v1**
 
 ---
@@ -164,7 +180,10 @@ Murmur 06-02 | 42 tickers
 📈 SPCE 75.3 RISING
 📊 GME 64.5 SQUEEZE_WATCH
 Slow burns: 9 | Squeeze: 4 | Opts: 5
+📈 Regime: BULLISH — entries enabled
 ```
+Regime line shows `📉 Regime: BEARISH — HOT_SCORE entries suppressed` when SPY
+is below its 50-day SMA. Omitted entirely if the SPY check fails.
 
 ---
 
@@ -279,6 +298,10 @@ Logo assets in dashboard/static/images/:
 - [ ] Subreddit-specific classifier tuning (r/options posts need different labels)
 - [ ] News sentiment from financial RSS feeds
 - [ ] More 2020 post classification to improve signal coverage
+- [ ] Incorporate is_bullish into signal scorer once classification batch
+      completes (est. Friday)
+- [ ] Validate v7 signal alpha against 2022-2025 data once price fetch completes
+- [ ] Copy updated DB from Mac back to Pi after classification batch finishes
 
 **Lower priority:**
 - [ ] Fear and greed index integration
@@ -297,6 +320,8 @@ Logo assets in dashboard/static/images/:
 - [x] Phase 4.6: Weekly Claude API digest
 - [x] Phase 4.7: Morning briefing notification, OPTIONS_ACTIVE flag,
       weekend/holiday market handling, git deployment on Pi, weekly DB backup
+- [x] Phase 4.8: SLOW_BURN hold fix, market regime filter, is_bullish
+      classification, earnings calendar flag, 2022-2025 price fetch
 - [ ] Phase 5: Live signal validation (starts Monday June 2, 2026)
 - [ ] Phase 6: Real money pilot (after consistent paper trading results)
 - [ ] Phase 7: Crypto track
@@ -305,12 +330,11 @@ Logo assets in dashboard/static/images/:
 
 ## Next Session Priorities
 
-1. Check Monday June 2 first live paper trades and morning briefing notification
-2. Review Friday June 5 first weekly digest from Claude API
-3. Evaluate whether daily signals are time-sensitive enough to warrant
-   intraday YoloStocks pulls (Phase 5 decision point)
-4. Consider Alpaca options chain data as free Unusual Whales alternative
-5. Add live post scraping when Reddit API approved
+1. Check Monday June 2 first live paper trades and morning briefing
+2. Verify EARNINGS_NEAR flag appearing correctly in daily report
+3. Check fetch_prices_2022_2025.py progress on Pi
+4. Check classify_posts.py batch progress on Mac
+5. Review Friday June 5 first weekly digest from Claude API
 
 ---
 

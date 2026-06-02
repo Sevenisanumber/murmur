@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Intraday position monitor — WSB Signal Lab
+Intraday position monitor — Murmur
 
 Checks all open paper_trades positions and executes exits when conditions are met.
 Designed to run every 30 minutes during market hours via cron; exits silently

@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Initialize the SQLite database with the full Phase 1 schema."""
 
+import logging
 import sqlite3
 import os
 import sys
+
+log = logging.getLogger(__name__)
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', 'wsb.db')
 
@@ -28,7 +31,8 @@ def init_db(db_path=DB_PATH):
             flair           TEXT,
             is_self         INTEGER,   -- 1 = text post, 0 = link post
             scraped_at      INTEGER,   -- unix timestamp of when we ingested it
-            source          TEXT       -- 'kaggle' or 'live'
+            source          TEXT,      -- 'kaggle' or 'live'
+            is_bullish      INTEGER    -- 1=bullish 0=bearish NULL=neutral/unclear
         );
 
         CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_utc);
@@ -109,9 +113,24 @@ def init_db(db_path=DB_PATH):
         );
     """)
 
+    migrate_is_bullish(conn)
+
     conn.commit()
     conn.close()
     print(f'Database initialized at {db_path}')
+
+
+def migrate_is_bullish(conn) -> None:
+    """Add is_bullish column to posts if absent. Safe to call on any existing DB."""
+    try:
+        conn.execute("ALTER TABLE posts ADD COLUMN is_bullish INTEGER")
+        conn.commit()
+        print("Migration: added 'is_bullish' column to posts")
+    except sqlite3.OperationalError as e:
+        if 'duplicate column name' in str(e).lower():
+            print("Migration: 'is_bullish' column already exists — skipping")
+        else:
+            raise
 
 
 if __name__ == '__main__':

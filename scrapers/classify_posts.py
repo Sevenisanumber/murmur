@@ -22,6 +22,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
 import urllib.error
@@ -65,7 +66,7 @@ STATUS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fil
                            'logs', 'classify_status.json')
 
 PROMPT_TEMPLATE = """\
-Classify this r/wallstreetbets post into exactly one category.
+Classify this r/wallstreetbets post. Respond with ONLY a JSON object on a single line — no explanation, no markdown.
 
 Categories:
   thesis        — investment thesis, DD, or reasoned analysis about why a stock will move
@@ -75,12 +76,16 @@ Categories:
   options_yolo  — sharing a specific options position, YOLO trade, or trade screenshot
   meme          — memes, jokes, off-topic humor, non-investment content
 
-Respond with ONLY the category name. No explanation, no punctuation.
+JSON fields:
+  "category"   — exactly one category name from the list above
+  "is_bullish" — 1 if the post is bullish on the ticker(s) mentioned, 0 if bearish, null if neutral or unclear
+
+Example: {{"category": "thesis", "is_bullish": 1}}
 
 Post title: {title}
 Post body: {body}
 
-Category:"""
+JSON:"""
 
 os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
 logging.basicConfig(
@@ -108,25 +113,46 @@ def add_classification_column(conn):
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_posts_classification ON posts(classification)"
         )
-        conn.commit()
         log.info("Added 'classification' column to posts table")
+    if 'is_bullish' not in cols:
+        conn.execute("ALTER TABLE posts ADD COLUMN is_bullish INTEGER")
+        log.info("Added 'is_bullish' column to posts table")
+    conn.commit()
 
 
-def fetch_unclassified(conn, limit=None, year=None):
-    sql = """
+def fetch_unclassified(conn, limit=None, year=None, priority=False):
+    score_filter = "" if priority else "AND p.score >= 10"
+    sql = f"""
         SELECT p.post_id, p.title, p.body
         FROM posts p
         WHERE p.classification IS NULL
-          AND p.score >= 10
+          {score_filter}
           AND EXISTS (SELECT 1 FROM post_tickers pt WHERE pt.post_id = p.post_id)
     """
     params = []
     if year is not None:
         sql += " AND strftime('%Y', datetime(p.created_utc, 'unixepoch')) = ?"
         params.append(str(year))
+    if priority:
+        sql += " ORDER BY p.score DESC"
     if limit:
         sql += f" LIMIT {limit}"
     return conn.execute(sql, params).fetchall()
+
+
+def count_unclassified(conn, priority=False) -> int:
+    """Count posts that still need classification.
+
+    priority=True matches the --priority-unclassified universe (no score floor).
+    priority=False matches the default universe (score >= 10).
+    """
+    score_filter = "" if priority else "AND score >= 10"
+    return conn.execute(
+        f"""SELECT COUNT(*) FROM posts
+            WHERE classification IS NULL
+              {score_filter}
+              AND EXISTS (SELECT 1 FROM post_tickers pt WHERE pt.post_id = posts.post_id)"""
+    ).fetchone()[0]
 
 
 def call_ollama(prompt, retries=3):
@@ -134,7 +160,7 @@ def call_ollama(prompt, retries=3):
         'model': MODEL,
         'prompt': prompt,
         'stream': False,
-        'options': {'temperature': 0.0, 'num_predict': 10},
+        'options': {'temperature': 0.0, 'num_predict': 40},
     }).encode()
 
     for attempt in range(retries):
@@ -180,19 +206,48 @@ def resolve_label(raw):
     return 'other'
 
 
+def parse_is_bullish(value):
+    """Convert the is_bullish field from JSON to 1, 0, or None."""
+    if value == 1 or value is True:
+        return 1
+    if value == 0 or value is False:
+        return 0
+    return None  # null / missing / anything else → neutral
+
+
 def classify_post(title, body):
+    """
+    Returns (label, is_bullish) where is_bullish is 1, 0, or None.
+    Returns (None, None) on API failure.
+    """
     title = (title or '').strip()
-    body = (body or '').strip()[:600]  # cap body to keep prompt compact
+    body = (body or '').strip()[:600]
     prompt = PROMPT_TEMPLATE.format(title=title, body=body)
 
     raw = call_ollama(prompt)
     if raw is None:
-        return None  # API failure — caller treats as failed, not classified
+        return None, None  # API failure — caller skips this post
 
-    label = resolve_label(raw)
+    # Try to parse the JSON response
+    label = None
+    is_bullish = None
+    json_match = re.search(r'\{[^}]+\}', raw)
+    if json_match:
+        try:
+            parsed = json.loads(json_match.group())
+            label = resolve_label(parsed.get('category', ''))
+            is_bullish = parse_is_bullish(parsed.get('is_bullish'))
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Fall back: treat the whole response as a plain-text label
+    if label is None:
+        label = resolve_label(raw)
+
     if label == 'other':
         log.warning("Unmapped label %r → 'other'  title=%r", raw.strip(), title[:60])
-    return label
+
+    return label, is_bullish
 
 
 def fmt_eta(seconds):
@@ -227,7 +282,7 @@ def write_status(started_at, done, total, label_counts, failed, rate_per_min):
     os.replace(tmp, STATUS_PATH)  # atomic write
 
 
-def run(test_mode=False, batch_size=50, year=None):
+def run(test_mode=False, batch_size=50, year=None, limit=None, priority=False):
     if not check_ollama():
         log.error(
             "Ollama is not running. Start it with:\n"
@@ -240,12 +295,13 @@ def run(test_mode=False, batch_size=50, year=None):
 
     add_classification_column(conn)
 
-    limit = 100 if test_mode else None
-    posts = fetch_unclassified(conn, limit=limit, year=year)
+    effective_limit = 100 if test_mode else limit
+    posts = fetch_unclassified(conn, limit=effective_limit, year=year, priority=priority)
     total = len(posts)
     year_str = f"year={year}" if year else "all years"
-    log.info("Found %d unclassified posts (test_mode=%s, batch_size=%d, %s)",
-             total, test_mode, batch_size, year_str)
+    mode_str = "priority" if priority else "default order"
+    log.info("Found %d unclassified posts (test_mode=%s, batch_size=%d, %s, %s, limit=%s)",
+             total, test_mode, batch_size, year_str, mode_str, effective_limit)
 
     if total == 0:
         log.info("Nothing to classify — exiting")
@@ -260,9 +316,9 @@ def run(test_mode=False, batch_size=50, year=None):
     start = time.time()
 
     for done, (post_id, title, body) in enumerate(posts, start=1):
-        label = classify_post(title, body)
+        label, is_bullish = classify_post(title, body)
         if label is not None:
-            pending.append((label, post_id))
+            pending.append((label, is_bullish, post_id))
             classified += 1
             label_counts[label] = label_counts.get(label, 0) + 1
         else:
@@ -271,7 +327,8 @@ def run(test_mode=False, batch_size=50, year=None):
         # Commit every batch_size posts
         if done % batch_size == 0 or done == total:
             conn.executemany(
-                "UPDATE posts SET classification = ? WHERE post_id = ?", pending
+                "UPDATE posts SET classification=?, is_bullish=? WHERE post_id=?",
+                pending,
             )
             conn.commit()
             pending.clear()
@@ -300,6 +357,10 @@ def run(test_mode=False, batch_size=50, year=None):
         classified, failed, total, fmt_eta(elapsed),
     )
     log.info("Label distribution: %s", {k: v for k, v in sorted(label_counts.items()) if v > 0})
+
+    remaining = count_unclassified(conn, priority=priority)
+    log.info("Unclassified posts remaining: %d", remaining)
+
     conn.close()
 
 
@@ -310,5 +371,15 @@ if __name__ == '__main__':
                         help='DB commit interval (default 50)')
     parser.add_argument('--year', type=int, metavar='YYYY',
                         help='Only classify posts from this year (e.g. --year 2020)')
+    parser.add_argument('--priority-unclassified', action='store_true',
+                        help='Process posts ordered by score DESC (most-upvoted first)')
+    parser.add_argument('--limit', type=int, default=None, metavar='N',
+                        help='Cap the run at N posts (default: all unclassified)')
     args = parser.parse_args()
-    run(test_mode=args.test, batch_size=args.batch_size, year=args.year)
+    run(
+        test_mode=args.test,
+        batch_size=args.batch_size,
+        year=args.year,
+        limit=args.limit,
+        priority=args.priority_unclassified,
+    )

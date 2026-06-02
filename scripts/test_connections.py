@@ -59,7 +59,7 @@ def test_db():
 
 
 if __name__ == '__main__':
-    print('=== WSB Signal Lab — Connection Test ===\n')
+    print('=== Murmur — Connection Test ===\n')
     db_ok = test_db()
     print()
     alpaca_ok = test_alpaca()

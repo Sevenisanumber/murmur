@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Weekly database backup — WSB Signal Lab
+Weekly database backup — Murmur
 
 Copies data/wsb.db to /mnt/media/backups/murmur/wsb_YYYY-MM-DD.db,
 retains the 4 most recent backups, and logs the result.

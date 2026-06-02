@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Daily Signal Report — WSB Signal Lab
+Daily Signal Report — Murmur
 
 Reads today's mention counts from daily_mentions, computes a live signal score,
 and prints a watchlist report formatted for Pi morning output.
@@ -153,6 +153,35 @@ def load_short_interest(conn: sqlite3.Connection, tickers: list[str]) -> dict:
     return result
 
 
+# ── Earnings calendar helpers ────────────────────────────────────────────────
+
+EARNINGS_NEAR_DAYS = 5
+
+
+def load_earnings_near(
+    conn: sqlite3.Connection, tickers: list[str], date: str
+) -> set[str]:
+    """Return tickers with earnings within EARNINGS_NEAR_DAYS of date."""
+    if not tickers:
+        return set()
+    try:
+        cutoff = (
+            datetime.strptime(date, '%Y-%m-%d') + timedelta(days=EARNINGS_NEAR_DAYS)
+        ).strftime('%Y-%m-%d')
+        placeholders = ','.join('?' * len(tickers))
+        rows = conn.execute(
+            f"""SELECT ticker FROM earnings_calendar
+                WHERE ticker IN ({placeholders})
+                  AND earnings_date IS NOT NULL
+                  AND earnings_date >= ?
+                  AND earnings_date <= ?""",
+            (*tickers, date, cutoff),
+        ).fetchall()
+        return {r[0] for r in rows}
+    except Exception:
+        return set()
+
+
 # ── Data loading ─────────────────────────────────────────────────────────────
 
 def load_today(conn: sqlite3.Connection, date: str) -> dict:
@@ -243,11 +272,13 @@ def build_rows(
     velocities: dict,
     si_data: dict | None = None,
     options_active: set | None = None,
+    earnings_near: set | None = None,
 ) -> list[dict]:
     tickers = list(ticker_data.keys())
     mention_pct = _pct_rank([math.log1p(ticker_data[t]['total']) for t in tickers])
     si  = si_data or {}
     opt = options_active or set()
+    ear = earnings_near or set()
 
     rows = []
     for i, ticker in enumerate(tickers):
@@ -277,6 +308,7 @@ def build_rows(
             'float_percent':   si_row.get('float_percent'),
             'squeeze_watch':   dtc is not None and dtc > SQUEEZE_DTC_MIN,
             'options_active':  ticker in opt,
+            'earnings_near':   ticker in ear,
         })
 
     rows.sort(key=lambda r: r['live_score'], reverse=True)
@@ -340,6 +372,7 @@ def format_report(rows: list[dict], date: str, velocity_note: str, top: int) -> 
         flags = ' '.join(f for f in [
             'OPTIONS_ACTIVE' if r['options_active'] else '',
             'SQUEEZE_WATCH'  if r['squeeze_watch']  else '',
+            'EARNINGS_NEAR'  if r['earnings_near']  else '',
         ] if f)
         lines.append(
             f"  {i:>2}  {r['ticker']:<6}  {r['total']:>8,}  "
@@ -438,6 +471,7 @@ def format_report(rows: list[dict], date: str, velocity_note: str, top: int) -> 
     rising       = sum(1 for r in rows if r['vel_tag'] == 'RISING')
     squeeze_ct   = sum(1 for r in rows if r.get('squeeze_watch'))
     options_ct   = sum(1 for r in rows if r.get('options_active'))
+    earnings_ct  = sum(1 for r in rows if r.get('earnings_near'))
 
     lines += [
         '',
@@ -447,7 +481,8 @@ def format_report(rows: list[dict], date: str, velocity_note: str, top: int) -> 
         f"  High-score (>60): {high_score}   Hot velocity (3-5×): {len(hot)}   "
         f"Extreme (>5×): {len(extreme)}",
         f"  Rising (1.5-3×): {rising}   Slow-burn (<0.5×): {len(slow_burn)}   "
-        f"Multi-sub: {len(multi)}   Squeeze watch: {squeeze_ct}   Options active: {options_ct}",
+        f"Multi-sub: {len(multi)}   Squeeze watch: {squeeze_ct}   Options active: {options_ct}   "
+        f"Earnings near: {earnings_ct}",
         '',
         '  Signal legend (from Phase 3 backtests, 2021-2024):',
         '    HOT (3-5×)       →  +1.79% avg 7d   58.6% win rate',
@@ -480,12 +515,16 @@ def generate_report(date: str | None = None, top: int = 15, db_path: str = DB_PA
         )
 
     velocities, vel_note = compute_velocity(conn, date, ticker_data)
-    ticker_list = list(ticker_data.keys())
+    ticker_list  = list(ticker_data.keys())
     si_data      = load_short_interest(conn, ticker_list)
     opts_active  = load_options_active(conn, ticker_list)
+    ear_near     = load_earnings_near(conn, ticker_list, date)
     conn.close()
 
-    rows = build_rows(ticker_data, velocities, si_data=si_data, options_active=opts_active)
+    rows = build_rows(
+        ticker_data, velocities,
+        si_data=si_data, options_active=opts_active, earnings_near=ear_near,
+    )
     return format_report(rows, date, vel_note, top)
 
 

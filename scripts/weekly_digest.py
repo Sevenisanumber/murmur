@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Weekly Digest — WSB Signal Lab
+Weekly Digest — Murmur
 
 Collects the past 7 days of paper trading performance, signal quality,
 and pipeline health, then asks Claude to analyze the data and give

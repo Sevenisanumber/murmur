@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Paper Trader — WSB Signal Lab Phase 4
+Paper Trader — Murmur Phase 4
 
 Reads today's daily report signals and executes paper trades via Alpaca.
 
@@ -613,7 +613,7 @@ def show_status(db_path: str = DB_PATH) -> None:
     dash = '─' * 70
 
     print(sep)
-    print(f'WSB Signal Lab  —  Paper Trading Status  {today}')
+    print(f'Murmur  —  Paper Trading Status  {today}')
     print(sep)
 
     # ── Open positions ────────────────────────────────────────────────────────

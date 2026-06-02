@@ -284,7 +284,7 @@ def analyze_signals(conn: sqlite3.Connection) -> str:
 
     lines += [
         sep,
-        "WSB Signal Lab — Phase 3: Signal Analysis  (v7)",
+        "Murmur — Phase 3: Signal Analysis  (v7)",
         f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         sep,
         "",

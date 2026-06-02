@@ -46,7 +46,7 @@ def send_pushover(message: str, title: str = 'Murmur') -> bool:
         return False
 
 
-def send_morning_briefing(report_text: str) -> bool:
+def send_morning_briefing(report_text: str, regime: str = '') -> bool:
     """
     Parse a daily report string and send a concise Pushover morning briefing.
     Returns True if notification was sent successfully, False otherwise.
@@ -135,6 +135,11 @@ def send_morning_briefing(report_text: str) -> bool:
         lines.append(f'Also HOT: {" ".join(extra_hot)}')
 
     lines.append(f'Slow burns: {n_slow} | Squeeze: {n_squeeze} | Opts: {n_opts}')
+
+    if regime == 'BEARISH':
+        lines.append('📉 Regime: BEARISH — HOT_SCORE entries suppressed')
+    elif regime == 'BULLISH':
+        lines.append('📈 Regime: BULLISH — entries enabled')
 
     return send_pushover('\n'.join(lines), title='Murmur Morning')
 
