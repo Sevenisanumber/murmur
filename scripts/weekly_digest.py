@@ -204,7 +204,8 @@ def collect_signal_quality(conn: sqlite3.Connection, since: str, today: str) -> 
     lines.append(f'  Dates: {", ".join(days_with_data)}')
 
     # Per-day velocity counts using daily_report functions
-    from scrapers.daily_report import load_today, compute_velocity, build_rows
+    from scrapers.daily_report import (load_today, compute_velocity, build_rows,
+                                       load_options_active, load_earnings_near)
 
     extreme_tickers = set()
     hot_tickers     = set()
@@ -217,8 +218,12 @@ def collect_signal_quality(conn: sqlite3.Connection, since: str, today: str) -> 
         ticker_data = load_today(conn, date)
         if not ticker_data:
             continue
+        ticker_list = list(ticker_data.keys())
         velocities, _ = compute_velocity(conn, date, ticker_data)
-        rows = build_rows(ticker_data, velocities)
+        opts_active = load_options_active(conn, ticker_list)
+        ear_near    = load_earnings_near(conn, ticker_list, date)
+        rows = build_rows(ticker_data, velocities,
+                          options_active=opts_active, earnings_near=ear_near)
 
         for r in rows:
             if r['vel_tag'] == 'EXTREME':
@@ -322,6 +327,251 @@ def collect_signal_quality(conn: sqlite3.Connection, since: str, today: str) -> 
         lines.append('\nPrice follow-through: no price data available for this week '
                      '(prices table covers historical backtesting data)')
 
+    # ── Signal score distribution ─────────────────────────────────────────────
+    if all_rows_this_week:
+        scores = [r['live_score'] for r in all_rows_this_week]
+        avg_s  = sum(scores) / len(scores)
+        lines.append(f'\nSignal score distribution ({len(scores)} ticker-day observations):')
+        lines.append(f'  Avg: {avg_s:.1f}  Min: {min(scores):.1f}  Max: {max(scores):.1f}')
+
+        # Score-band buckets
+        buckets = [('>80', 80), ('70-80', 70), ('60-70', 60), ('50-60', 50), ('<50', -1)]
+        prev = 101
+        for label, floor in buckets:
+            count = sum(1 for s in scores if s > floor and s <= prev)
+            lines.append(f'  {label:<6}  {count:>4} rows')
+            prev = floor
+
+        # Unique tickers that hit each flag at least once this week
+        tickers_opts    = {r['ticker'] for r in all_rows_this_week if r.get('options_active')}
+        tickers_earn    = {r['ticker'] for r in all_rows_this_week if r.get('earnings_near')}
+        tickers_squeeze = {r['ticker'] for r in all_rows_this_week if r.get('squeeze_watch')}
+
+        lines.append(f'\nFlag coverage (unique tickers this week):')
+        lines.append(f'  OPTIONS_ACTIVE:  {len(tickers_opts)}'
+                     + (f'  — {", ".join(sorted(tickers_opts))}' if tickers_opts else ''))
+        lines.append(f'  SQUEEZE_WATCH:   {len(tickers_squeeze)}'
+                     + (f'  — {", ".join(sorted(tickers_squeeze))}' if tickers_squeeze else ''))
+        lines.append(f'  EARNINGS_NEAR:   {len(tickers_earn)}'
+                     + (f'  — {", ".join(sorted(tickers_earn))}' if tickers_earn else ''))
+
+    return '\n'.join(lines)
+
+
+def collect_skipped_trades(since: str, today: str) -> str:
+    """Parse paper_trades.log to count skipped entry categories for the week."""
+    lines = ['=== SKIPPED TRADE LOG ===']
+    log_path = os.path.join(ROOT, 'logs', 'paper_trades.log')
+
+    if not os.path.exists(log_path):
+        lines.append('paper_trades.log not found — paper trader has not run yet.')
+        return '\n'.join(lines)
+
+    since_dt = datetime.strptime(since, '%Y-%m-%d')
+    today_dt = datetime.strptime(today, '%Y-%m-%d')
+
+    regime_suppressed = 0   # HOT_SCORE entries blocked by BEARISH filter
+    extreme_skipped   = 0   # EXTREME velocity — never trade
+    no_price_data     = 0   # no Alpaca price data
+    position_cap      = 0   # max positions or exposure limit reached
+    already_holding   = 0   # duplicate — already in portfolio
+    other_skips       = 0
+
+    import re
+    date_re = re.compile(r'^(\d{4}-\d{2}-\d{2})')
+
+    try:
+        with open(log_path, 'r', errors='replace') as fh:
+            for line in fh:
+                m = date_re.match(line)
+                if not m:
+                    continue
+                try:
+                    line_dt = datetime.strptime(m.group(1), '%Y-%m-%d')
+                except ValueError:
+                    continue
+                if not (since_dt <= line_dt <= today_dt):
+                    continue
+                if '[SKIP]' not in line:
+                    continue
+                if 'HOT_SCORE suppressed' in line:
+                    regime_suppressed += 1
+                elif 'EXTREME velocity' in line:
+                    extreme_skipped += 1
+                elif 'no Alpaca price data' in line:
+                    no_price_data += 1
+                elif 'max positions' in line or 'exposure limit' in line:
+                    position_cap += 1
+                elif 'already holding' in line:
+                    already_holding += 1
+                else:
+                    other_skips += 1
+    except OSError as e:
+        lines.append(f'Could not read log: {e}')
+        return '\n'.join(lines)
+
+    total = (regime_suppressed + extreme_skipped + no_price_data
+             + position_cap + already_holding + other_skips)
+    lines.append(f'\nSkipped entries this week ({since} → {today}):  total={total}')
+    lines.append(f'  HOT_SCORE suppressed by BEARISH regime:  {regime_suppressed}')
+    lines.append(f'  EXTREME velocity (>5×, never trade):     {extreme_skipped}')
+    lines.append(f'  No Alpaca price data:                    {no_price_data}')
+    lines.append(f'  Position/exposure cap hit:               {position_cap}')
+    lines.append(f'  Already holding ticker:                  {already_holding}')
+    lines.append(f'  Other:                                   {other_skips}')
+
+    return '\n'.join(lines)
+
+
+def collect_regime_history(conn: sqlite3.Connection, since: str, today: str) -> str:
+    """Compute SPY 50-day SMA regime for each calendar day in the window."""
+    lines = ['=== REGIME HISTORY ===']
+
+    _SMA_WINDOW = 50
+    _FETCH_BARS = 60
+
+    since_dt = datetime.strptime(since, '%Y-%m-%d')
+    today_dt = datetime.strptime(today, '%Y-%m-%d')
+    days = []
+    d = since_dt
+    while d <= today_dt:
+        days.append(d.strftime('%Y-%m-%d'))
+        d += timedelta(days=1)
+
+    lines.append('\nDaily regime (SPY close vs 50-day SMA):')
+    bullish_days = bearish_days = 0
+    for day in days:
+        rows = conn.execute(
+            """SELECT close FROM prices
+               WHERE ticker = 'SPY' AND close IS NOT NULL AND date <= ?
+               ORDER BY date DESC LIMIT ?""",
+            (day, _FETCH_BARS),
+        ).fetchall()
+        if len(rows) < _SMA_WINDOW:
+            lines.append(f'  {day}  insufficient SPY data ({len(rows)} bars)')
+            continue
+        closes    = [r[0] for r in reversed(rows)]
+        spy_price = closes[-1]
+        sma50     = sum(closes[-_SMA_WINDOW:]) / _SMA_WINDOW
+        regime    = 'BULLISH' if spy_price >= sma50 else 'BEARISH'
+        flag      = '' if regime == 'BULLISH' else '  ← HOT_SCORE entries suppressed'
+        lines.append(f'  {day}  SPY=${spy_price:.2f}  50-SMA=${sma50:.2f}  {regime}{flag}')
+        if regime == 'BULLISH':
+            bullish_days += 1
+        else:
+            bearish_days += 1
+
+    lines.append(f'\nSummary: {bullish_days} BULLISH days  {bearish_days} BEARISH days')
+    return '\n'.join(lines)
+
+
+def collect_earnings_near_impact(conn: sqlite3.Connection) -> str:
+    """Compare performance of half-sized ($50) vs full-sized ($100) trades."""
+    lines = ['=== EARNINGS_NEAR IMPACT ===']
+
+    if not _table_exists(conn, 'paper_trades'):
+        lines.append('No paper_trades table.')
+        return '\n'.join(lines)
+
+    total = conn.execute('SELECT COUNT(*) FROM paper_trades').fetchone()[0]
+    if total == 0:
+        lines.append('No trades yet.')
+        return '\n'.join(lines)
+
+    # position_size < 100 uniquely identifies EARNINGS_NEAR trades (halved to $50)
+    def _cohort_stats(where_clause: str) -> tuple:
+        return conn.execute(f"""
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN status='closed' THEN 1 ELSE 0 END) AS closed,
+                SUM(CASE WHEN status='closed' AND pnl >= 0 THEN 1 ELSE 0 END) AS wins,
+                COALESCE(AVG(CASE WHEN status='closed' THEN pnl_pct END), 0) AS avg_pct,
+                COALESCE(SUM(CASE WHEN status='closed' THEN pnl   END), 0) AS total_pnl
+              FROM paper_trades {where_clause}
+        """).fetchone()
+
+    n_h, c_h, w_h, avg_h, pnl_h = _cohort_stats('WHERE position_size < 100')
+    n_f, c_f, w_f, avg_f, pnl_f = _cohort_stats('WHERE position_size >= 100')
+
+    lines.append(f'\nHalf-sized trades ($50, EARNINGS_NEAR): {n_h} total')
+    if n_h > 0:
+        if c_h > 0:
+            lines.append(f'  Closed: {c_h}  Win rate: {w_h/c_h*100:.0f}%  '
+                         f'Avg P&L%: {avg_h:+.1f}%  Realized: ${pnl_h:+.2f}')
+        else:
+            lines.append(f'  None closed yet — {n_h - c_h} open')
+    else:
+        lines.append('  None placed yet.')
+
+    lines.append(f'\nFull-sized trades ($100, normal): {n_f} total')
+    if n_f > 0 and c_f > 0:
+        lines.append(f'  Closed: {c_f}  Win rate: {w_f/c_f*100:.0f}%  '
+                     f'Avg P&L%: {avg_f:+.1f}%  Realized: ${pnl_f:+.2f}')
+
+    if c_h > 0 and c_f > 0:
+        diff = avg_h - avg_f
+        lines.append(f'\nEarnings-near vs normal: {diff:+.1f}pp avg P&L% difference')
+        verdict = 'underperform' if diff < 0 else 'outperform'
+        lines.append(f'  Earnings-near trades {verdict} full-sized by {abs(diff):.1f}pp on avg')
+
+    return '\n'.join(lines)
+
+
+def collect_classification_stats(conn: sqlite3.Connection) -> str:
+    """Summarize post classification batch progress and is_bullish ratio."""
+    lines = ['=== CLASSIFICATION PROGRESS ===']
+
+    total_posts = conn.execute('SELECT COUNT(*) FROM posts').fetchone()[0]
+    if total_posts == 0:
+        lines.append('No posts in database.')
+        return '\n'.join(lines)
+
+    classified = conn.execute(
+        "SELECT COUNT(*) FROM posts WHERE classification IS NOT NULL AND classification != ''"
+    ).fetchone()[0]
+    pct = classified / total_posts * 100
+
+    lines.append(f'\nTotal posts:  {total_posts:,}')
+    lines.append(f'Classified:   {classified:,}  ({pct:.1f}%)')
+    lines.append(f'Unclassified: {total_posts - classified:,}')
+
+    # is_bullish label distribution
+    bull_row = conn.execute(
+        """SELECT
+               SUM(CASE WHEN is_bullish = 1 THEN 1 ELSE 0 END),
+               SUM(CASE WHEN is_bullish = 0 THEN 1 ELSE 0 END),
+               COUNT(*)
+             FROM posts WHERE is_bullish IS NOT NULL"""
+    ).fetchone()
+    n_bull, n_bear, n_labeled = bull_row
+    n_bull = n_bull or 0
+    n_bear = n_bear or 0
+    n_labeled = n_labeled or 0
+
+    if n_labeled > 0:
+        lines.append(f'\nis_bullish labels: {n_labeled:,} posts')
+        lines.append(f'  Bullish: {n_bull:,}  ({n_bull/n_labeled*100:.1f}%)')
+        lines.append(f'  Bearish: {n_bear:,}  ({n_bear/n_labeled*100:.1f}%)')
+        lines.append(f'  Ratio (bull/bear): {n_bull/n_bear:.2f}' if n_bear > 0
+                     else '  No bearish labels yet')
+    else:
+        lines.append('\nis_bullish labels: none set yet')
+
+    # Classification value distribution (top 8)
+    dist = conn.execute(
+        """SELECT classification, COUNT(*) AS n
+             FROM posts
+            WHERE classification IS NOT NULL AND classification != ''
+            GROUP BY classification
+            ORDER BY n DESC
+            LIMIT 8"""
+    ).fetchall()
+    if dist:
+        lines.append('\nClassification distribution (top 8):')
+        for cls, n in dist:
+            bar = '█' * min(20, int(n / total_posts * 200))
+            lines.append(f'  {(cls or "(none)"):<22}  {n:>7,}  {bar}')
+
     return '\n'.join(lines)
 
 
@@ -409,16 +659,21 @@ def build_digest_data(conn: sqlite3.Connection, today: str) -> str:
         tzinfo=timezone.utc).timestamp())
 
     header = '\n'.join([
-        '=== WSB SIGNAL LAB — WEEKLY DIGEST ===',
+        '=== MURMUR — WEEKLY DIGEST ===',
         f'Period : {since} to {today}',
         f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M")}',
     ])
 
-    trading = collect_paper_trading(conn, since, today)
-    signals = collect_signal_quality(conn, since, today)
-    health  = collect_data_health(conn, since_ts, today, since)
+    trading        = collect_paper_trading(conn, since, today)
+    skipped        = collect_skipped_trades(since, today)
+    signals        = collect_signal_quality(conn, since, today)
+    regime         = collect_regime_history(conn, since, today)
+    earnings_near  = collect_earnings_near_impact(conn)
+    classification = collect_classification_stats(conn)
+    health         = collect_data_health(conn, since_ts, today, since)
 
-    return '\n\n'.join([header, trading, signals, health])
+    return '\n\n'.join([header, trading, skipped, signals, regime,
+                        earnings_near, classification, health])
 
 
 # ── Claude API call ───────────────────────────────────────────────────────────
