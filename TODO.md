@@ -1,5 +1,5 @@
 # Murmur — Running To-Do List
-_Last updated: June 2, 2026_
+_Last updated: June 3, 2026_
 
 ---
 
@@ -24,6 +24,12 @@ _Last updated: June 2, 2026_
 - [ ] **Subreddit-specific classifier tuning** — r/options posts use different language patterns and need their own label set. Currently using WSB labels everywhere.
 - [ ] **News sentiment from financial RSS feeds** — add as a signal input layer. Potential sources: Reuters, Bloomberg RSS, SEC EDGAR filings.
 - [ ] **More 2020 post classification** — 2020 is the highest-volume year in the dataset and the most underclassified. Prioritize when scheduling next batch run.
+- [ ] **Weekly digest continuity — pass previous week's analysis to Claude** — currently each Friday digest is a fresh context window with no memory of prior weeks. Pass the last 2 weeks of digest responses alongside the new data payload so Claude can identify trends and follow up on prior suggestions.
+  - Read the 2 most recent `logs/weekly_digest_YYYY-MM-DD.txt` files
+  - Prepend to API call as "Previous weeks' analysis:" section
+  - Gives Claude continuity: "last week I flagged X, here's whether it held"
+  - Lightweight change, ~15–20 lines in `scripts/weekly_digest.py`
+  - **Implement after first digest runs clean (week of June 9)**
 
 ---
 
