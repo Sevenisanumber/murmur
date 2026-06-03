@@ -8,12 +8,12 @@ Trading rules:
   BUY: score > 70  AND vel_tag == 'HOT'       (3-5x velocity)
   BUY: score > 60  AND vel_tag == 'SLOW_BURN' (<0.5x velocity)
   SKIP: EXTREME velocity (>5x) — always
-  Max 3 open positions, $100 per trade, $500 max total exposure
+  Max 10 open positions, $100 per trade, $500 reference exposure cap
   EARNINGS_NEAR: position halved to $50 if earnings within 5 days (don't skip — size down)
   Exit: 7 days (HOT/SQUEEZE) OR 25 days (SLOW_BURN) OR +15% profit OR -8% stop loss
 
 Hard limits:
-  Never trade price < $5
+  Never trade price < $3
   Never trade tickers with no Alpaca price data
   Never exceed $500 total paper exposure
   Market must be open before placing any order
@@ -62,7 +62,7 @@ MAX_POSITIONS      = 10      # raised for paper trading data collection
 POSITION_SIZE      = 100.0   # dollars per trade
 MAX_TOTAL_EXPOSURE = 500.0   # reference cap — not enforced in paper trading mode
                               # (10 slots × $100 = $1000 intentionally exceeds this)
-MIN_PRICE          = 5.0     # penny stock filter
+MIN_PRICE          = 3.0     # penny stock filter
 
 TAKE_PROFIT_PCT        = 0.15    # +15%
 STOP_LOSS_PCT          = 0.08    # -8%
