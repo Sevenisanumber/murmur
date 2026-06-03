@@ -55,9 +55,13 @@ log = logging.getLogger(__name__)
 
 # ── Trading constants ─────────────────────────────────────────────────────────
 
-MAX_POSITIONS      = 3
+MAX_POSITIONS      = 10      # raised for paper trading data collection
+# Future: consider Option C — dynamic position sizing that scales down to stay
+# within MAX_TOTAL_EXPOSURE as slots fill (e.g. 10 positions at $50 each = $500
+# max). Better for real money phase.
 POSITION_SIZE      = 100.0   # dollars per trade
-MAX_TOTAL_EXPOSURE = 500.0   # hard cap across all open positions
+MAX_TOTAL_EXPOSURE = 500.0   # reference cap — not enforced in paper trading mode
+                              # (10 slots × $100 = $1000 intentionally exceeds this)
 MIN_PRICE          = 5.0     # penny stock filter
 
 TAKE_PROFIT_PCT        = 0.15    # +15%
@@ -537,12 +541,8 @@ def run_trading(date: str, db_path: str = DB_PATH, dry_run: bool = False,
             log.info(f'[SKIP] {ticker} | signal={signal_type} | max positions ({MAX_POSITIONS}) reached')
             continue
 
-        if total_exposure + entry_size > MAX_TOTAL_EXPOSURE:
-            log.info(
-                f'[SKIP] {ticker} | signal={signal_type} | '
-                f'exposure limit: ${total_exposure:.2f}+${entry_size:.0f} > ${MAX_TOTAL_EXPOSURE:.0f}'
-            )
-            continue
+        # Exposure cap is intentionally not enforced — paper trading data collection
+        # wants all 10 slots to fill regardless of total exposure.
 
         # Price checks
         current_price = get_current_price(api, ticker)
@@ -551,7 +551,7 @@ def run_trading(date: str, db_path: str = DB_PATH, dry_run: bool = False,
             continue
 
         if current_price < MIN_PRICE:
-            log.info(f'[SKIP] {ticker} | signal={signal_type} | penny stock (${current_price:.2f} < ${MIN_PRICE})')
+            log.info(f'[SKIP] {ticker} | price ${current_price:.2f} below ${MIN_PRICE:.2f} minimum')
             continue
 
         # Place order
