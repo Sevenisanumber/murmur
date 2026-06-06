@@ -98,6 +98,56 @@ def init_paper_trades_table(conn) -> None:
     conn.commit()
 
 
+def store_live_signals(conn, rows: list[dict], date: str) -> int:
+    """
+    Persist live daily signal rows into the signals table so the weekly digest
+    can show component breakdowns for each trade.
+
+    Uses INSERT OR IGNORE so historical rows (which carry forward returns and
+    full classification data) are never overwritten. live rows leave
+    thesis_count, hype_count, avg_post_score, and unique_authors as NULL
+    because daily_mentions only provides per-subreddit counts, not post-level
+    classification. The weekly digest handles those NULLs gracefully.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS signals (
+            ticker             TEXT NOT NULL,
+            date               TEXT NOT NULL,
+            signal_score       REAL,
+            mention_count      INTEGER,
+            thesis_count       INTEGER,
+            hype_count         INTEGER,
+            avg_post_score     REAL,
+            unique_authors     INTEGER,
+            velocity_ratio     REAL,
+            slow_burn          INTEGER,
+            sub_diversity      INTEGER,
+            forward_return_7d  REAL,
+            forward_return_30d REAL,
+            PRIMARY KEY (ticker, date)
+        )
+    """)
+    inserted = 0
+    for r in rows:
+        cur = conn.execute(
+            """INSERT OR IGNORE INTO signals
+               (ticker, date, signal_score, mention_count,
+                velocity_ratio, slow_burn, sub_diversity)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                r['ticker'], date,
+                r['live_score'],
+                r['total'],
+                r['velocity'],
+                1 if r['slow_burn'] else 0,
+                r['n_subs'],
+            ),
+        )
+        inserted += cur.rowcount
+    conn.commit()
+    return inserted
+
+
 def load_open_positions(conn) -> list[dict]:
     rows = conn.execute(
         """SELECT trade_id, ticker, signal_type, signal_score, velocity, vel_tag,
@@ -462,7 +512,8 @@ def run_trading(date: str, db_path: str = DB_PATH, dry_run: bool = False,
         conn.close()
         return
 
-    log.info(f'Loaded {len(rows)} signal rows for {date}')
+    n_written = store_live_signals(conn, rows, date)
+    log.info(f'Loaded {len(rows)} signal rows for {date} ({n_written} new rows written to signals table)')
 
     # ── 2b. Load squeeze watch set ────────────────────────────────────────────
     squeeze_watch = load_squeeze_watch(conn)

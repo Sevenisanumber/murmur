@@ -108,14 +108,17 @@ def collect_paper_trading(conn: sqlite3.Connection, since: str, today: str) -> s
 
             if sc:
                 vel, mentions, sub_div, hype_ct, thesis_ct, avg_score = sc
-                classified = (hype_ct or 0) + (thesis_ct or 0)
-                hype_ratio = f'{hype_ct/classified*100:.0f}%' if classified > 0 else 'n/a'
+                hype_ct_n    = hype_ct or 0
+                thesis_ct_n  = thesis_ct or 0
+                classified   = hype_ct_n + thesis_ct_n
+                hype_ratio   = f'{hype_ct_n/classified*100:.0f}%' if classified > 0 else 'n/a'
+                score_str    = f'{avg_score:.1f}' if avg_score is not None else 'n/a'
                 lines.append(
                     f'    vel_ratio={vel:.2f}x  '
                     f'mentions={mentions:,}  '
                     f'sub_diversity={sub_div}  '
-                    f'hype_ratio={hype_ratio} ({hype_ct}/{classified})  '
-                    f'avg_post_score={avg_score:.1f}'
+                    f'hype_ratio={hype_ratio} ({hype_ct_n}/{classified})  '
+                    f'avg_post_score={score_str}'
                 )
             else:
                 lines.append(f'    (no signal row found for {ticker} on {edate})')
