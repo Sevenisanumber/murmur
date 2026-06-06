@@ -514,6 +514,10 @@ def collect_earnings_near_impact(conn: sqlite3.Connection) -> str:
 
     n_h, c_h, w_h, avg_h, pnl_h = _cohort_stats('WHERE position_size < 100')
     n_f, c_f, w_f, avg_f, pnl_f = _cohort_stats('WHERE position_size >= 100')
+    c_h = c_h or 0
+    w_h = w_h or 0
+    c_f = c_f or 0
+    w_f = w_f or 0
 
     lines.append(f'\nHalf-sized trades ($50, EARNINGS_NEAR): {n_h} total')
     if n_h > 0:
