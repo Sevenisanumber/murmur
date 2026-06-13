@@ -233,18 +233,25 @@ def market_is_open(api) -> bool:
 
 
 def get_current_price(api, ticker: str) -> float | None:
-    """Return latest trade price, or None if ticker is unavailable."""
+    """Return latest trade price, or None if ticker is unavailable.
+
+    Uses get_latest_bar as primary — get_bars with minute/day limit returns empty
+    for many tickers on the free Alpaca tier, especially outside market hours.
+    Falls back to most-recent daily bar if latest_bar is unavailable.
+    """
     try:
-        bars = api.get_bars(ticker, '1Min', limit=1).df
-        if not bars.empty:
-            return float(bars.iloc[-1]['close'])
-        # Fall back to daily bar
+        bar = api.get_latest_bar(ticker)
+        if bar is not None:
+            return float(bar.c)
+    except Exception:
+        pass
+    try:
         bars = api.get_bars(ticker, '1Day', limit=1).df
         if not bars.empty:
             return float(bars.iloc[-1]['close'])
-        return None
     except Exception:
-        return None
+        pass
+    return None
 
 
 def refresh_spy_price(api, db_path: str = DB_PATH) -> None:
@@ -653,7 +660,19 @@ def run_trading(date: str, db_path: str = DB_PATH, dry_run: bool = False,
         # Exposure cap is intentionally not enforced — paper trading data collection
         # wants all 10 slots to fill regardless of total exposure.
 
-        # Price checks
+        # Pre-filter: check local DB for last known price to skip penny stocks
+        # before making an Alpaca API call. Catches tickers like CXAI ($0.19)
+        # that would otherwise burn an API call and log "no price data" instead
+        # of the correct "below minimum" message.
+        cached = conn.execute(
+            "SELECT close FROM prices WHERE ticker=? AND close IS NOT NULL ORDER BY date DESC LIMIT 1",
+            (ticker,),
+        ).fetchone()
+        if cached and cached[0] < MIN_PRICE:
+            log.info(f'[SKIP] {ticker} | price ${cached[0]:.4f} below ${MIN_PRICE:.2f} minimum (local DB)')
+            continue
+
+        # Fetch live price from Alpaca
         current_price = get_current_price(api, ticker)
         if current_price is None:
             log.info(f'[SKIP] {ticker} | signal={signal_type} | no Alpaca price data')
