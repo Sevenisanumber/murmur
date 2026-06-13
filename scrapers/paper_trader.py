@@ -6,7 +6,7 @@ Reads today's daily report signals and executes paper trades via Alpaca.
 
 Trading rules:
   BUY: score > 70  AND vel_tag == 'HOT'       (3-5x velocity)
-  BUY: score >= 35 AND vel_tag == 'SLOW_BURN' (<0.5x velocity)
+  BUY: score >= 30 AND vel_tag == 'SLOW_BURN' (<0.5x velocity)
   SKIP: EXTREME velocity (>5x) — always
   Max 10 open positions, $100 per trade, $500 reference exposure cap
   EARNINGS_NEAR: position halved to $50 if earnings within 5 days (don't skip — size down)
@@ -74,8 +74,9 @@ MAX_HOLD_DAYS_SLOW_BURN = 25     # SLOW_BURN entries — edge is at ~30 days
 EXCLUDED_TICKERS = {
     'SPY', 'QQQ', 'IWM', 'DIA',   # broad market ETFs
     'SPX', 'VIX', 'NDX', 'RUT',   # indices (not directly tradeable)
-    'VTI', 'VXUS', 'BND',          # Vanguard ETFs
+    'VTI', 'VOO', 'VTV', 'VXUS', 'BND',  # Vanguard ETFs
     'GLD', 'SLV', 'USO', 'TLT',   # commodity/bond ETFs
+    'BRK.B', 'IJR', 'IVV',        # large-cap/index ETFs
     'BTC', 'ETH',                  # crypto (no Alpaca support)
 }
 
@@ -608,19 +609,19 @@ def run_trading(date: str, db_path: str = DB_PATH, dry_run: bool = False,
             log.info(f'[SQUEEZE] {ticker} | score {score:.1f} + {SQUEEZE_BONUS:.0f} bonus = {effective_score:.1f}')
 
         # Determine if entry conditions are met.
-        # SLOW_BURN threshold is 35 (lowered from 60 to gather live trade data): velocity scoring caps SLOW_BURN tickers
+        # SLOW_BURN threshold is 30 (lowered from 60 to gather live trade data): velocity scoring caps SLOW_BURN tickers
         # at vel_score < 20, so live_score ceiling for slow_burn is ~58. >60 is unreachable.
         signal_type = None
         if effective_score > 70 and effective_tag == 'HOT':
             signal_type = 'SQUEEZE_WATCH' if is_squeeze else 'HOT_SCORE'
-        elif effective_score >= 35 and effective_tag == 'SLOW_BURN':
+        elif effective_score >= 30 and effective_tag == 'SLOW_BURN':
             signal_type = 'SLOW_BURN'
 
         if signal_type is None:
             if slow_burn:
                 log.info(
                     f'[SKIP-SB] {ticker} | slow_burn=True score={effective_score:.1f} '
-                    f'(need >=35) vel={velocity:.2f}x — SLOW_BURN threshold not met'
+                    f'(need >=30) vel={velocity:.2f}x — SLOW_BURN threshold not met'
                 )
             else:
                 log.debug(f'[SKIP] {ticker} | score={effective_score:.1f} tag={effective_tag} — no entry rule matched')
