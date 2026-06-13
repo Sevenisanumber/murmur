@@ -9,7 +9,7 @@ actionable recommendations.
 Steps:
   1. Collect structured data from wsb.db (paper_trades, daily_mentions,
      scrape_log, prices)
-  2. Call claude-sonnet-4-20250514 with the data (system prompt cached)
+  2. Call claude-sonnet-4-6 with the data (system prompt cached)
   3. Save full response to logs/weekly_digest_YYYY-MM-DD.txt
   4. Send Pushover notification when complete
 
@@ -49,7 +49,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-MODEL    = 'claude-sonnet-4-20250514'
+MODEL    = 'claude-sonnet-4-6'
 MAX_TOKENS = 4096
 
 SYSTEM_PROMPT = (
