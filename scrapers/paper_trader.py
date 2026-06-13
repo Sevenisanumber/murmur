@@ -6,7 +6,7 @@ Reads today's daily report signals and executes paper trades via Alpaca.
 
 Trading rules:
   BUY: score > 70  AND vel_tag == 'HOT'       (3-5x velocity)
-  BUY: score > 60  AND vel_tag == 'SLOW_BURN' (<0.5x velocity)
+  BUY: score >= 45 AND vel_tag == 'SLOW_BURN' (<0.5x velocity)
   SKIP: EXTREME velocity (>5x) — always
   Max 10 open positions, $100 per trade, $500 reference exposure cap
   EARNINGS_NEAR: position halved to $50 if earnings within 5 days (don't skip — size down)
@@ -68,6 +68,16 @@ TAKE_PROFIT_PCT        = 0.15    # +15%
 STOP_LOSS_PCT          = 0.08    # -8%
 MAX_HOLD_DAYS          = 7       # HOT / SQUEEZE_WATCH entries
 MAX_HOLD_DAYS_SLOW_BURN = 25     # SLOW_BURN entries — edge is at ~30 days
+
+# Tickers that must never be entered as paper trades.
+# SPY exclusion here is separate from SPY's use in get_market_regime().
+EXCLUDED_TICKERS = {
+    'SPY', 'QQQ', 'IWM', 'DIA',   # broad market ETFs
+    'SPX', 'VIX', 'NDX', 'RUT',   # indices (not directly tradeable)
+    'VTI', 'VXUS', 'BND',          # Vanguard ETFs
+    'GLD', 'SLV', 'USO', 'TLT',   # commodity/bond ETFs
+    'BTC', 'ETH',                  # crypto (no Alpaca support)
+}
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
@@ -234,6 +244,39 @@ def get_current_price(api, ticker: str) -> float | None:
         return None
     except Exception:
         return None
+
+
+def refresh_spy_price(api, db_path: str = DB_PATH) -> None:
+    """
+    Fetch recent SPY daily bars from Alpaca and upsert into the prices table.
+    Uses INSERT OR REPLACE so stale cached rows are overwritten with current data.
+    Called before get_market_regime() so the regime check always sees today's price.
+    """
+    import sqlite3
+    try:
+        start_str = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
+        end_str   = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+        bars = api.get_bars('SPY', '1Day', start=start_str, end=end_str).df
+        if bars.empty:
+            log.warning('[REGIME] SPY bars from Alpaca empty — regime data may be stale')
+            return
+        rows = [
+            ('SPY', str(ts)[:10], float(r['open']), float(r['high']),
+             float(r['low']), float(r['close']), int(r['volume']), 'alpaca')
+            for ts, r in bars.iterrows()
+        ]
+        conn = sqlite3.connect(db_path)
+        conn.executemany(
+            """INSERT OR REPLACE INTO prices
+               (ticker, date, open, high, low, close, volume, source)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            rows,
+        )
+        conn.commit()
+        conn.close()
+        log.info(f'[REGIME] Refreshed {len(rows)} SPY price rows (latest: {rows[-1][1]})')
+    except Exception as e:
+        log.warning(f'[REGIME] SPY price refresh failed: {e} — regime data may be stale')
 
 
 def place_buy_order(api, ticker: str, shares: float, dry_run: bool = False) -> dict | None:
@@ -503,6 +546,7 @@ def run_trading(date: str, db_path: str = DB_PATH, dry_run: bool = False,
     check_exits(api, conn, today=date, dry_run=dry_run)
 
     # ── 1b. Market regime check ───────────────────────────────────────────────
+    refresh_spy_price(api, db_path)
     regime, _spy, _sma = get_market_regime(db_path)
 
     # ── 2. Load today's signals ───────────────────────────────────────────────
@@ -544,6 +588,11 @@ def run_trading(date: str, db_path: str = DB_PATH, dry_run: bool = False,
         velocity  = row['velocity']
         slow_burn = row['slow_burn']
 
+        # Hard skip: excluded indices, ETFs, and crypto
+        if ticker in EXCLUDED_TICKERS:
+            log.info(f'[SKIP] {ticker} | excluded (index/ETF/crypto)')
+            continue
+
         # Override vel_tag with SLOW_BURN when slow_burn flag is set
         effective_tag = 'SLOW_BURN' if slow_burn else vel_tag
 
@@ -558,15 +607,23 @@ def run_trading(date: str, db_path: str = DB_PATH, dry_run: bool = False,
         if is_squeeze and effective_tag == 'HOT':
             log.info(f'[SQUEEZE] {ticker} | score {score:.1f} + {SQUEEZE_BONUS:.0f} bonus = {effective_score:.1f}')
 
-        # Determine if entry conditions are met
+        # Determine if entry conditions are met.
+        # SLOW_BURN threshold is 45, not 60: velocity scoring caps SLOW_BURN tickers
+        # at vel_score < 20, so live_score ceiling for slow_burn is ~58. >60 is unreachable.
         signal_type = None
         if effective_score > 70 and effective_tag == 'HOT':
             signal_type = 'SQUEEZE_WATCH' if is_squeeze else 'HOT_SCORE'
-        elif effective_score > 60 and effective_tag == 'SLOW_BURN':
+        elif effective_score >= 45 and effective_tag == 'SLOW_BURN':
             signal_type = 'SLOW_BURN'
 
         if signal_type is None:
-            log.debug(f'[SKIP] {ticker} | score={score:.1f} tag={effective_tag} — no entry rule matched')
+            if slow_burn:
+                log.info(
+                    f'[SKIP-SB] {ticker} | slow_burn=True score={effective_score:.1f} '
+                    f'(need >=45) vel={velocity:.2f}x — SLOW_BURN threshold not met'
+                )
+            else:
+                log.debug(f'[SKIP] {ticker} | score={effective_score:.1f} tag={effective_tag} — no entry rule matched')
             continue
 
         # Regime filter: HOT_SCORE suppressed in bearish markets; SLOW_BURN and SQUEEZE_WATCH unaffected
