@@ -6,7 +6,7 @@ Reads today's daily report signals and executes paper trades via Alpaca.
 
 Trading rules:
   BUY: score > 70  AND vel_tag == 'HOT'       (3-5x velocity)
-  BUY: score >= 45 AND vel_tag == 'SLOW_BURN' (<0.5x velocity)
+  BUY: score >= 35 AND vel_tag == 'SLOW_BURN' (<0.5x velocity)
   SKIP: EXTREME velocity (>5x) — always
   Max 10 open positions, $100 per trade, $500 reference exposure cap
   EARNINGS_NEAR: position halved to $50 if earnings within 5 days (don't skip — size down)
@@ -608,19 +608,19 @@ def run_trading(date: str, db_path: str = DB_PATH, dry_run: bool = False,
             log.info(f'[SQUEEZE] {ticker} | score {score:.1f} + {SQUEEZE_BONUS:.0f} bonus = {effective_score:.1f}')
 
         # Determine if entry conditions are met.
-        # SLOW_BURN threshold is 45, not 60: velocity scoring caps SLOW_BURN tickers
+        # SLOW_BURN threshold is 35 (lowered from 60 to gather live trade data): velocity scoring caps SLOW_BURN tickers
         # at vel_score < 20, so live_score ceiling for slow_burn is ~58. >60 is unreachable.
         signal_type = None
         if effective_score > 70 and effective_tag == 'HOT':
             signal_type = 'SQUEEZE_WATCH' if is_squeeze else 'HOT_SCORE'
-        elif effective_score >= 45 and effective_tag == 'SLOW_BURN':
+        elif effective_score >= 35 and effective_tag == 'SLOW_BURN':
             signal_type = 'SLOW_BURN'
 
         if signal_type is None:
             if slow_burn:
                 log.info(
                     f'[SKIP-SB] {ticker} | slow_burn=True score={effective_score:.1f} '
-                    f'(need >=45) vel={velocity:.2f}x — SLOW_BURN threshold not met'
+                    f'(need >=35) vel={velocity:.2f}x — SLOW_BURN threshold not met'
                 )
             else:
                 log.debug(f'[SKIP] {ticker} | score={effective_score:.1f} tag={effective_tag} — no entry rule matched')
