@@ -40,12 +40,15 @@ MAX_VELOCITY_CAP = 10.0
 
 # Subreddit → hype weight (proxy for post-classification hype_mix score)
 SUBREDDIT_HYPE = {
-    'wallstreetbets': 1.00,
-    'options':        0.90,
-    'pennystocks':    0.80,
-    'shortsqueeze':   0.85,
-    'stocks':         0.40,
-    'investing':      0.20,
+    'wallstreetbets':    1.00,
+    'options':           0.90,
+    'TheRaceTo10Million': 0.90,
+    'theraceto10million': 0.90,  # lowercase fallback in case API normalises casing
+    'shortsqueeze':      0.85,
+    'pennystocks':       0.80,
+    'smallstreetbets':   0.80,
+    'stocks':            0.40,
+    'investing':         0.20,
 }
 
 # Short squeeze watch threshold
@@ -317,12 +320,15 @@ def build_rows(
 
 def _sub_abbrev(sub: str) -> str:
     return {
-        'wallstreetbets': 'WSB',
-        'stocks':         'STK',
-        'investing':      'INV',
-        'pennystocks':    'PP',
-        'options':        'OPT',
-        'shortsqueeze':   'SS',
+        'wallstreetbets':    'WSB',
+        'stocks':            'STK',
+        'investing':         'INV',
+        'pennystocks':       'PP',
+        'options':           'OPT',
+        'shortsqueeze':      'SS',
+        'TheRaceTo10Million': 'RT10M',
+        'theraceto10million': 'RT10M',  # lowercase fallback
+        'smallstreetbets':   'SSB',
     }.get(sub, sub[:3].upper())
 
 

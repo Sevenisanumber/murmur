@@ -1,60 +1,132 @@
 # Murmur
 
-A personal research project that listens for signal in the noise of retail sentiment.
+A Reddit sentiment-based trading signal system that detects community momentum in stocks before price moves.
 
-Murmur collects WallStreetBets posts, classifies them with a local LLM, scores each ticker-day pair against a composite signal model, and tracks simulated trades against real forward returns. Everything runs on a Raspberry Pi 5 with no cloud dependencies.
+*Named after a murmuration of starlings — thousands of voices forming a single signal.*
+
+---
 
 ## What it does
 
-- Ingests WSB post data (Kaggle archive + daily live scrape via YoloStocks)
-- Classifies posts by type — hype, thesis, options-yolo, news-reaction, meme, loss-porn — using Mistral running locally via Ollama
-- Scores each (ticker, date) pair on a 0–100 composite signal: mention velocity, classification mix, subreddit diversity, mention count, and avg post score
-- Fetches historical prices from Alpaca (post-2020) and Yahoo Finance (pre-2020) and computes 1d / 7d / 30d forward returns
-- Runs a paper trading simulation via Alpaca: enters on HOT or SLOW\_BURN signals above score thresholds, exits after 7 days or at profit/loss limits
-- Serves a live dashboard over the local network showing the signal pulse, history, paper trades, and data health
+- Monitors WallStreetBets and 4 related subreddits via Arctic-Shift API, every 30 minutes during market hours
+- Classifies posts using a local Mistral 7B LLM (Ollama) — hype, thesis, options-yolo, news-reaction, meme, loss-porn
+- Scores each ticker-day pair using a 5-factor signal algorithm (v7) backtested on 2M+ posts from 2012–2021
+- Executes automated paper trades via Alpaca Markets based on signal type and score thresholds
+- Sends Pushover notifications for trade entries, exits, morning briefings, and a weekly Claude AI digest
+- Runs 24/7 on a Raspberry Pi 5 with no cloud dependencies
 
-## Tech stack
+---
 
-| Layer | Tool |
-|---|---|
-| Hardware | Raspberry Pi 5 |
-| Database | SQLite (WAL mode) |
-| LLM classification | Mistral via Ollama (local, no API cost) |
-| Price data | Alpaca Markets API (post-2020), Yahoo Finance via yfinance (pre-2020) |
-| Live mentions | YoloStocks daily CSV feed |
-| Dashboard | Flask + plain HTML/CSS, auto-refresh every 5 min |
-| Notifications | ntfy (self-hosted) |
+## Signal Scoring (v7)
 
-## Current phase status
+Each ticker-day pair receives a composite score from 0–100:
 
-| Phase | Description | Status |
+| Factor | Weight | Notes |
 |---|---|---|
-| 1 | Data collection — posts, prices, ticker extraction | Complete |
-| 2 | LLM classification of post intent | Complete |
-| 3 | Signal scoring v7 — composite model with subreddit diversity | Active |
-| 4 | Paper trading simulation via Alpaca | Active |
+| Mention velocity | 35% | Ratio vs. 30-day baseline; 3–5x is the sweet spot |
+| Classification quality | 30% | Hype-heavy days outperform thesis-heavy in short windows |
+| Subreddit diversity | 15% | Mentions across multiple communities signal broader consensus |
+| Mention count | 12% | Percentile ranked |
+| Avg post score | 8% | Upvotes as a proxy for community conviction |
 
-The signal scorer is on v7. Each version is benchmarked against 7d and 30d forward returns; the version history and alpha figures are written to `logs/signal_analysis.txt` on each run.
+**Backtested performance (47,411 ticker-day rows, 2012–2021):**
+- High signal (score >70): +4.49% avg 7d return, +11.21% avg 30d return, 54.5% win rate
+- Baseline: +1.14% avg 7d, +2.89% avg 30d
+- Velocity sweet spot (3–5x): +2.19% avg 7d; above 5x shows reversal risk (-3.41%)
+- Cross-community consensus (4+ subreddits): strongest single predictor — +3.76% avg 7d, +11.46% avg 30d
 
-## Structure
+---
+
+## Signal Flags
+
+| Flag | Meaning |
+|---|---|
+| `HOT` | Velocity 3–5x normal; primary entry signal |
+| `SLOW_BURN` | Velocity <0.5x; low-noise accumulation phase, edge at 30 days |
+| `EXTREME` | Velocity >5x; never traded — historical reversal risk |
+| `RISING` | Velocity 1.5–3x; building momentum, watch only |
+| `SQUEEZE_WATCH` | Days-to-cover >5 AND active WSB mentions; +10 score bonus |
+| `OPTIONS_ACTIVE` | Ticker appeared in `options_yolo`-classified posts |
+| `EARNINGS_NEAR` | Earnings within 5 days; position size halved to $50 |
+
+---
+
+## Paper Trading Rules
+
+**Entry:**
+- `HOT_SCORE`: signal score >70 AND velocity 3–5x; suppressed in BEARISH market regime (SPY below 50-day SMA)
+- `SLOW_BURN`: signal score ≥30 AND velocity <0.5x; unaffected by market regime
+- `SQUEEZE_WATCH`: HOT entry with +10 score bonus for high short interest
+
+**Exit:**
+- Take profit: +15% (both signal types)
+- Stop loss: −8% for HOT_SCORE / SQUEEZE_WATCH; −15% for SLOW_BURN (wider to let the 30-day edge play out)
+- Time exit: 7 days for HOT/SQUEEZE_WATCH; 25 days for SLOW_BURN
+
+**Sizing:**
+- $100 per trade ($50 if `EARNINGS_NEAR`), max 15 open positions
+- Penny stock filter: never trade below $3
+
+---
+
+## Hardware
+
+- **Raspberry Pi 5** (16GB RAM) — primary server; runs scrapers, cron jobs, dashboard, and Ollama 24/7
+- **External SSD** (931GB) — all data storage; `/data` symlinked to SSD
+- **USB flash drive** (32GB) — Ollama models + Python venv
+- **M1 Max Mac** — heavy batch classification jobs only; Pi handles all daily operations
+
+---
+
+## Data Sources
+
+| Source | Use | Notes |
+|---|---|---|
+| [Arctic-Shift](https://arctic-shift.photon-reddit.com) | Live Reddit posts | Free, no API key; ~1hr lag; 100 posts/subreddit per pull |
+| [YoloStocks](https://yolostocks.live) | Daily mention counts | Free CSV feed; pulled at 6am daily |
+| [Alpaca Markets](https://alpaca.markets) | Paper trading + price data | Free tier; paper account |
+| yfinance | Historical prices pre-2020 | Pinned at 0.2.58 |
+| Reddit API | Live posts | Pending approval (submitted May 31, 2026) |
+
+Subreddits monitored: r/wallstreetbets, r/stocks, r/investing, r/pennystocks, r/options
+
+---
+
+## Stack
+
+Python · SQLite (WAL mode) · Flask · Ollama / Mistral 7B · Alpaca API · Claude API (weekly digest) · Pushover · Tailscale · Raspberry Pi OS
+
+---
+
+## Project Structure
 
 ```
-data/          SQLite database (wsb.db)
-scrapers/      Data collection, classification, scoring, and paper trading
-dashboard/     Flask dashboard (app.py + templates/)
-scripts/       Daily scheduler (run_daily.py) and utilities
-logs/          Per-run logs and signal analysis report
-archive/       Raw source data files
+scrapers/      Data collection, classification, signal scoring, paper trading
+scripts/       Daily pipeline orchestrator, weekly digest, backup utilities
+dashboard/     Flask dashboard (local network + Tailscale)
+data/          SQLite database — wsb.db (~1.5GB, symlinked to SSD)
+logs/          Per-run logs, daily reports, weekly digests
 ```
 
-## Setup
+---
 
-1. Copy `.env.example` to `.env` and fill in your credentials
-2. Create and activate a virtual environment: `python3 -m venv venv && source venv/bin/activate`
-3. Install dependencies: `pip install -r requirements.txt`
-4. Run connection tests: `python scripts/test_connections.py`
-5. Initialise the database: `python scripts/init_db.py`
+## Status
+
+**Phase 5: Live paper trading validation** — started June 2, 2026
+
+The signal model is backtested; the current phase measures whether historical alpha holds on live data. Paper trading runs automatically each market day.
+
+---
+
+## Roadmap
+
+- **Layer 2** — technical indicator overlay (RSI, volume, short interest) as signal inputs
+- **Layer 3** — LLM synthesis agent that combines signal score, technicals, and post classification into a natural-language trade thesis
+- **Layer 4** — outcome feedback loop; weekly Claude digest proposes parameter adjustments based on live trade results; human approves before deployment
+- **Phase 6** — real money pilot after 30+ closed trades with consistent positive alpha
+
+---
 
 ## Disclaimer
 
-This is a personal research project. Nothing here constitutes financial advice. The paper trading simulation uses Alpaca's paper environment and involves no real money.
+Personal research project. Nothing here is financial advice. All trading uses Alpaca's paper environment — no real money involved.

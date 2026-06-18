@@ -61,14 +61,19 @@ SUBREDDITS = [
     'investing',
     'pennystocks',
     'options',
+    'TheRaceTo10Million',
+    'smallstreetbets',
 ]
 
 SUB_ABBREV = {
-    'wallstreetbets': 'WSB',
-    'stocks':         'STK',
-    'investing':      'INV',
-    'pennystocks':    'PP',
-    'options':        'OPT',
+    'wallstreetbets':    'WSB',
+    'stocks':            'STK',
+    'investing':         'INV',
+    'pennystocks':       'PP',
+    'options':           'OPT',
+    'TheRaceTo10Million': 'RT10M',
+    'theraceto10million': 'RT10M',  # lowercase fallback in case API normalises casing
+    'smallstreetbets':   'SSB',
 }
 
 ARCTIC_SHIFT_URL = 'https://arctic-shift.photon-reddit.com/api/posts/search'

@@ -33,6 +33,8 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+# YoloStocks does not provide CSV feeds for r/TheRaceTo10Million or r/smallstreetbets;
+# those subreddits are fetched live via scrapers/fetch_reddit_posts.py only.
 SOURCES = {
     'wallstreetbets': 'https://yolostocks.live/downloads/wallstreetbets.csv',
     'stocks':         'https://yolostocks.live/downloads/stocks.csv',
