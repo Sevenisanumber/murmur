@@ -30,11 +30,13 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime
 
 ROOT    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from scrapers.extract_tickers import run_extraction_for_posts
+from scrapers.notify import send_pushover
 
 DB_PATH     = os.path.join(ROOT, 'data', 'wsb.db')
 LOG_DIR     = os.path.join(ROOT, 'logs')
@@ -60,6 +62,14 @@ SUBREDDITS = [
     'pennystocks',
     'options',
 ]
+
+SUB_ABBREV = {
+    'wallstreetbets': 'WSB',
+    'stocks':         'STK',
+    'investing':      'INV',
+    'pennystocks':    'PP',
+    'options':        'OPT',
+}
 
 ARCTIC_SHIFT_URL = 'https://arctic-shift.photon-reddit.com/api/posts/search'
 REQUEST_HEADERS  = {
@@ -181,10 +191,13 @@ def trigger_classification(post_ids: list[str]) -> None:
 
 def run(dry_run: bool = False, db_path: str = DB_PATH) -> int:
     """Fetch posts from all subreddits, insert new ones, extract tickers. Returns new post count."""
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(ROOT, '.env'))
+
     log.info(f'=== fetch_reddit_posts starting | dry_run={dry_run} ===')
 
-    state       = load_state()
-    now         = int(time.time())
+    state         = load_state()
+    now           = int(time.time())
     default_after = now - DEFAULT_LOOKBACK
 
     conn = sqlite3.connect(db_path)
@@ -194,7 +207,8 @@ def run(dry_run: bool = False, db_path: str = DB_PATH) -> int:
     total_new     = 0
     total_dupes   = 0
     all_new_ids: list[str] = []
-    new_state: dict[str, int] = dict(state)  # carry forward existing entries
+    sub_new: dict[str, int] = {}                # per-subreddit new post counts
+    new_state: dict[str, int] = dict(state)     # carry forward existing entries
 
     for i, subreddit in enumerate(SUBREDDITS):
         if i > 0:
@@ -203,7 +217,7 @@ def run(dry_run: bool = False, db_path: str = DB_PATH) -> int:
         after = state.get(subreddit, default_after)
         raw   = fetch_subreddit(subreddit, after)
         if not raw:
-            log.info(f'[{subreddit}] fetched=0 (no data or error)')
+            log.info(f'[{subreddit}] fetched=0 new=0 (no new posts since last fetch)')
             continue
 
         fetched = len(raw)
@@ -220,11 +234,13 @@ def run(dry_run: bool = False, db_path: str = DB_PATH) -> int:
         new_ids = insert_posts(conn, raw)
         new     = len(new_ids)
         dupes   = fetched - new
-        total_new   += new
-        total_dupes += dupes
+        total_new        += new
+        total_dupes      += dupes
+        sub_new[subreddit] = new
         all_new_ids.extend(new_ids)
         log.info(f'[{subreddit}] fetched={fetched} new={new} dupes={dupes} after={after}')
 
+    mention_count = 0
     if not dry_run:
         save_state(new_state)
 
@@ -243,6 +259,18 @@ def run(dry_run: bool = False, db_path: str = DB_PATH) -> int:
         f'=== fetch_reddit_posts done | '
         f'fetched={total_fetched} new={total_new} dupes={total_dupes} ==='
     )
+
+    if total_new > 0:
+        ts     = datetime.now().strftime('%m-%d %H:%M')
+        sub_line = ' | '.join(
+            f'{SUB_ABBREV[s]}: {sub_new.get(s, 0)}'
+            for s in SUBREDDITS
+        )
+        send_pushover(
+            f'📡 {ts} | {total_new} new posts\n{sub_line}\nTickers: {mention_count} extracted',
+            title='Murmur Reddit Feed',
+        )
+
     return total_new
 
 
