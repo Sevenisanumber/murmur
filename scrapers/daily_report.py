@@ -503,29 +503,33 @@ def generate_report(date: str | None = None, top: int = 15, db_path: str = DB_PA
     if date is None:
         date = datetime.now().strftime('%Y-%m-%d')
 
-    conn = sqlite3.connect(db_path)
-    conn.execute('PRAGMA journal_mode=WAL')
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.execute('PRAGMA journal_mode=WAL')
 
-    ticker_data = load_today(conn, date)
-    if not ticker_data:
+        ticker_data = load_today(conn, date)
+        if not ticker_data:
+            conn.close()
+            return (
+                f'No data in daily_mentions for {date}.\n'
+                'Run: python scrapers/fetch_daily_mentions.py'
+            )
+
+        velocities, vel_note = compute_velocity(conn, date, ticker_data)
+        ticker_list  = list(ticker_data.keys())
+        si_data      = load_short_interest(conn, ticker_list)
+        opts_active  = load_options_active(conn, ticker_list)
+        ear_near     = load_earnings_near(conn, ticker_list, date)
         conn.close()
-        return (
-            f'No data in daily_mentions for {date}.\n'
-            'Run: python scrapers/fetch_daily_mentions.py'
+
+        rows = build_rows(
+            ticker_data, velocities,
+            si_data=si_data, options_active=opts_active, earnings_near=ear_near,
         )
+        return format_report(rows, date, vel_note, top)
 
-    velocities, vel_note = compute_velocity(conn, date, ticker_data)
-    ticker_list  = list(ticker_data.keys())
-    si_data      = load_short_interest(conn, ticker_list)
-    opts_active  = load_options_active(conn, ticker_list)
-    ear_near     = load_earnings_near(conn, ticker_list, date)
-    conn.close()
-
-    rows = build_rows(
-        ticker_data, velocities,
-        si_data=si_data, options_active=opts_active, earnings_near=ear_near,
-    )
-    return format_report(rows, date, vel_note, top)
+    except Exception as e:
+        return f'ERROR generating report for {date}: {e}\nCheck daily_pipeline.log for details.'
 
 
 def main():
@@ -547,10 +551,14 @@ def main():
 
     print(report)
 
+    # Atomic write: write to .tmp then rename so the file is never left empty
+    # if this process is interrupted or if a shell redirect truncated the target.
     out_path = os.path.join(LOG_DIR, f'daily_report_{date}.txt')
-    with open(out_path, 'w') as f:
+    tmp_path = out_path + '.tmp'
+    with open(tmp_path, 'w') as f:
         f.write(report)
         f.write('\n')
+    os.replace(tmp_path, out_path)
     print(f'\nReport saved → {out_path}')
 
 

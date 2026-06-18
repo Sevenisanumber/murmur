@@ -106,9 +106,11 @@ def main() -> int:
         report = generate_report()
         date = datetime.now().strftime('%Y-%m-%d')
         out  = os.path.join(ROOT, 'logs', f'daily_report_{date}.txt')
-        with open(out, 'w') as f:
+        tmp  = out + '.tmp'
+        with open(tmp, 'w') as f:
             f.write(report)
             f.write('\n')
+        os.replace(tmp, out)   # atomic: file is never in a partially-written state
         log.info(f'Daily report written to {out}')
         print(report)
         try:

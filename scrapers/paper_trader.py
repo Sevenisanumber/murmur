@@ -43,15 +43,22 @@ from scrapers.notify import send_pushover
 os.makedirs(LOG_DIR, exist_ok=True)
 
 LOG_PATH = os.path.join(LOG_DIR, 'paper_trades.log')
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s %(levelname)s %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(LOG_PATH),
-    ],
-)
+
+# Attach handlers directly to this module's named logger rather than using
+# basicConfig on the root logger. This prevents double-logging when paper_trader
+# is imported by run_daily.py (which configures the root logger itself) — messages
+# would otherwise fire through both this logger's handlers AND the root's handlers.
 log = logging.getLogger(__name__)
+if not log.handlers:
+    _fmt = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+    _sh  = logging.StreamHandler()
+    _sh.setFormatter(_fmt)
+    _fh  = logging.FileHandler(LOG_PATH)
+    _fh.setFormatter(_fmt)
+    log.setLevel(logging.INFO)
+    log.addHandler(_sh)
+    log.addHandler(_fh)
+    log.propagate = False   # don't pass messages up to root logger's handlers
 
 # ── Trading constants ─────────────────────────────────────────────────────────
 
