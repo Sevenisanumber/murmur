@@ -81,6 +81,8 @@ EXCLUDED_TICKERS = {
     'GLD', 'SLV', 'USO', 'TLT',   # commodity/bond ETFs
     'BRK.B', 'IJR', 'IVV',        # large-cap/index ETFs
     'BTC', 'ETH',                  # crypto (no Alpaca support)
+    'FTSE', 'DRAM',                # indices (not directly tradeable)
+    'CORN', 'WHEAT', 'OIL', 'GOLD', 'SILVER',  # commodity names (not tickers)
 }
 
 
