@@ -28,6 +28,10 @@ import urllib.error
 import urllib.request
 
 ROOT    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+from scrapers.extract_tickers import run_extraction_for_posts
+
 DB_PATH = os.path.join(ROOT, 'data', 'wsb.db')
 LOG_DIR = os.path.join(ROOT, 'logs')
 
@@ -137,9 +141,6 @@ def run(dry_run: bool = False, db_path: str = DB_PATH) -> int:
 
     conn = sqlite3.connect(db_path)
     conn.execute('PRAGMA journal_mode=WAL')
-
-    # Import here so extract_tickers logging config doesn't clobber ours
-    from scrapers.extract_tickers import run_extraction_for_posts
 
     total_fetched = 0
     total_new     = 0
