@@ -1,5 +1,5 @@
 # Murmur — Project Handoff Document
-**Last updated: May 31, 2026**
+**Last updated: June 18, 2026**
 *Drop this into a new chat to continue where we left off.*
 
 ---
@@ -25,6 +25,8 @@ thousands of individuals moving together, forming something larger than any one.
   - OS drive: 29GB SD card (nearly full, data moved to SSD)
   - Data folder: symlinked to `/mnt/media/wsb-signal-lab-data` (931GB SSD)
   - USB flash drive at `/mnt/ollama` — stores Ollama models (32GB)
+  - **venv moved to USB flash drive** at `/mnt/ollama/wsb-venv`, symlinked back to `~/wsb-signal-lab/venv`
+  - SD card now at ~95% capacity — Docker (17GB) is the main culprit; needs to move to SSD in a planned maintenance window
 - **Mac (M1 Max, 32GB)** — used for heavy batch jobs (classification) only
   - Pi is fully self-sufficient for daily operations
   - Mac only needed for large one-time classification runs
@@ -52,6 +54,7 @@ thousands of individuals moving together, forming something larger than any one.
     check_positions.py     — intraday position monitor
     fetch_short_interest.py — yfinance short interest data
     fetch_daily_mentions.py — live YoloStocks data fetcher
+    fetch_reddit_posts.py  — Arctic-Shift live Reddit scraper (pulls every 30 min during market hours)
     fetch_earnings.py      — yfinance earnings calendar for active tickers
     import_archive.py      — YoloStocks historical archive importer
     notify.py              — Pushover notifications (incl. morning briefing)
@@ -142,20 +145,43 @@ The daily watchlist report shows these signal flags per ticker:
 ## Paper Trading Rules (Phase 4)
 
 - **Entry — HOT_SCORE:** signal score >70 AND velocity 3-5x
-- **Entry — SLOW_BURN:** signal score >60 AND velocity <0.5x
+- **Entry — SLOW_BURN:** signal score >=30 AND velocity <0.5x
+  *(threshold lowered to 30 on June 13, 2026, to gather live validation data.
+  The original >60 threshold was mathematically unreachable: the velocity scoring
+  curve caps SLOW_BURN tickers at a live_score of ~58, since vel<0.5 contributes
+  <10 points out of 50 possible from the velocity component.)*
 - **Entry — SQUEEZE_WATCH bonus:** +10 score if days-to-cover >5
 - **Market regime filter:** HOT_SCORE entries suppressed when SPY is below its
   50-day SMA (BEARISH regime). SLOW_BURN and SQUEEZE_WATCH are unaffected.
   Fails open to BULLISH if Alpaca data is unavailable.
-- **Never trade:** EXTREME velocity (>5x), penny stocks (<$5), no Alpaca data
+- **SPY regime data:** `refresh_spy_price()` fetches 90 days of SPY bars from Alpaca
+  via `INSERT OR REPLACE` before each regime check — prevents stale cached values
+  from repeating. SPY is not in `post_tickers` and `fetch_prices.py` uses a
+  historical date range, so without this step the regime check reads week-old data.
+- **Excluded tickers:** `EXCLUDED_TICKERS` set in `paper_trader.py` — never entered
+  regardless of signal score. Logged as `[SKIP] TICKER | excluded (index/ETF/crypto)`.
+  Current list: SPY, QQQ, IWM, DIA, SPX, VIX, NDX, RUT, VTI, VOO, VTV, VXUS, BND,
+  GLD, SLV, USO, TLT, BTC, ETH, BRK.B, IJR, IVV, FTSE, DRAM, CORN, WHEAT, OIL, GOLD, SILVER
+- **Never trade:** EXTREME velocity (>5x), price below $3, no Alpaca data
+- **Penny stock pre-filter:** local `prices` table is queried before any Alpaca API
+  call; tickers with a cached close below $3 are skipped immediately with
+  `[SKIP] ... below $3.00 minimum (local DB)` — avoids wasted API calls for tickers
+  like CXAI ($0.19) that would otherwise appear as "no Alpaca price data"
+- **Price fetch:** `api.get_latest_bar(ticker).c` is the primary method; falls back
+  to `get_bars('1Day', limit=1)`. Replaced `get_bars('1Min')` which returned empty
+  for most tickers on the free Alpaca tier, especially outside market hours.
+- **SLOW_BURN logging:** candidates evaluated but below the score threshold log
+  `[SKIP-SB]` at INFO level with score and velocity — visible in `paper_trades.log`
 - **Market closed handling:** paper_trader checks Alpaca clock API; exits cleanly
   on weekends and holidays — expected behavior, not an error
 - **Position size:** $100 per trade ($50 if EARNINGS_NEAR)
-- **Max positions:** 3 open simultaneously
-- **Max exposure:** $500 total
+- **Max positions:** 10 open simultaneously
+- **Max exposure:** $500 reference cap (not hard-enforced; paper data collection
+  intentionally allows all 10 slots to fill)
 - **Exit — HOT_SCORE / SQUEEZE_WATCH:** +15% take profit, -8% stop loss, 7 days held
-- **Exit — SLOW_BURN:** +15% take profit, -8% stop loss, 25 days held
-  (edge is at 30d, not 7d — was being exited too early before Phase 4.8)
+- **Exit — SLOW_BURN:** +15% take profit, -15% stop loss, 25 days held
+  (edge is at 30d, not 7d — was exiting too early before Phase 4.8; wider stop added
+  Phase 4.10 because low-velocity stocks have more early noise and need room to breathe)
 - **No shorting in v1**
 
 ---
@@ -190,13 +216,14 @@ is below its 50-day SMA. Omitted entirely if the SPY check fails.
 ## Automated Schedule (Pi crontab, CDT)
 
 ```
-0 6    * * *     Daily pipeline (fetch → extract → calc → report → trade → notify)
-0 8    * * 0     Weekly stats summary (Sunday)
+0 6    * * *       Daily pipeline (fetch → extract → calc → report → trade → notify)
+0 8    * * 0       Weekly stats summary (Sunday)
 */30 8-14 * * 1-5  Intraday position monitor (every 30 min, weekdays)
-0 15   * * 1-5   Final position check + daily summary notification (4pm ET)
-30 16  * * 5     Weekly Claude API digest (Friday 4:30pm CDT)
-0 17   * * 5     Weekly database backup (Friday 5pm CDT, after digest)
-0 7    1,15 * *  Short interest fetch (1st and 15th of month)
+*/30 8-16 * * 1-5  Reddit post scraper — Arctic-Shift (every 30 min, market hours)
+0 15   * * 1-5     Final position check + daily summary notification (4pm ET)
+30 16  * * 5       Weekly Claude API digest (Friday 4:30pm CDT)
+0 17   * * 5       Weekly database backup (Friday 5pm CDT, after digest)
+0 7    1,15 * *    Short interest fetch (1st and 15th of month)
 ```
 
 ---
@@ -225,11 +252,18 @@ The database (wsb.db) is NOT in git — too large. Use SCP for database updates.
   - Free tier, rate limited at 200 req/min
   - Base URL: https://paper-api.alpaca.markets
 
+- **Arctic-Shift** — free public Reddit archive API, no key required
+  - Endpoint: https://arctic-shift.photon-reddit.com/api/posts/search
+  - Data current to within ~1 hour; pulls last 100 posts per subreddit per run
+  - Per-subreddit fetch state tracked in `logs/reddit_fetch_state.json` (timestamp of last-seen post)
+  - Used alongside YoloStocks — YoloStocks provides mention counts, Arctic-Shift provides post text for classification
+  - Subreddits: wallstreetbets, stocks, investing, pennystocks, options
+
 - **Reddit API** — PENDING APPROVAL
-  - Submitted May 31, 2026 via Reddit support form
+  - Submitted May 31, 2026 via Reddit support form; follow-up email sent June 18
   - Subreddits requested: r/WallStreetBets, r/stocks, r/investing, r/pennystocks, r/options
   - Account: Physical_Ad5496
-  - Will add live post scraping when approved
+  - Arctic-Shift is the working interim solution; official API will enable real-time access without archive lag
 
 - **yfinance** — historical prices pre-2020
   - Cache location: /tmp/yf_cache (important: avoids SQLite conflict)
@@ -240,7 +274,7 @@ The database (wsb.db) is NOT in git — too large. Use SCP for database updates.
 ## Weekly Claude API Digest
 
 - Runs every Friday at 4:30pm CDT
-- Sends 7-day performance summary to claude-sonnet-4-20250514
+- Sends 7-day performance summary to claude-sonnet-4-6
 - Saves response to logs/weekly_digest_YYYY-MM-DD.txt
 - Sends Pushover notification when complete
 - Credential in .env as ANTHROPIC_API_KEY
@@ -287,7 +321,7 @@ Logo assets in dashboard/static/images/:
 
 See **TODO.md** in the project root for the full task list (high / medium / low / ideas).
 
-Current open items as of June 2, 2026: Reddit API approval pending, favicon cache issue, is_bullish scorer integration, 2022–2025 signal validation, adaptive intraday entry checks, and several medium/low priority enhancements.
+Current open items as of June 18, 2026: Docker data directory move to SSD (Pi at 95% SD capacity), Reddit API approval pending, favicon cache issue, is_bullish scorer integration, 2022–2025 signal validation, adaptive intraday entry checks, and Arctic-Shift data lag evaluation. See TODO.md for full list.
 
 ---
 
@@ -303,6 +337,15 @@ Current open items as of June 2, 2026: Reddit API approval pending, favicon cach
       weekend/holiday market handling, git deployment on Pi, weekly DB backup
 - [x] Phase 4.8: SLOW_BURN hold fix, market regime filter, is_bullish
       classification, earnings calendar flag, 2022-2025 price fetch
+- [x] Phase 4.9: Fix stale SPY regime price (refresh_spy_price() before each check),
+      fix SLOW_BURN entry threshold (>=30, was mathematically unreachable at >60),
+      add EXCLUDED_TICKERS for indices/ETFs/crypto, fix price fetch to use
+      get_latest_bar(), add penny stock pre-filter before Alpaca API call,
+      add [SKIP-SB] INFO logging for SLOW_BURN candidates
+- [x] Phase 4.10: Arctic-Shift live Reddit scraper (fetch_reddit_posts.py, 30-min intraday
+      cron), split stop losses by signal type (HOT_SCORE -8%, SLOW_BURN -15%),
+      expanded EXCLUDED_TICKERS with commodity/index names, venv moved to USB drive
+      to free SD card space, classify_posts.py --post-ids mode with lock file
 - [ ] Phase 5: Live signal validation (starts Monday June 2, 2026)
 - [ ] Phase 6: Real money pilot (after consistent paper trading results)
 - [ ] Phase 7: Crypto track
