@@ -96,6 +96,7 @@ def main() -> int:
     from scrapers.extract_tickers      import run_extraction
     from scrapers.calc_returns         import calc_returns
     from scrapers.fetch_daily_mentions import fetch_daily_mentions
+    from scrapers.fetch_reddit_posts   import run as fetch_reddit_posts
     from scrapers.fetch_earnings       import run as fetch_earnings_run
     from scrapers.daily_report         import generate_report
     from scrapers.paper_trader         import run_trading, get_market_regime
@@ -138,6 +139,7 @@ def main() -> int:
         ('extract_tickers',      run_extraction),
         ('calc_returns',         calc_returns),
         ('fetch_daily_mentions', fetch_daily_mentions),
+        ('fetch_reddit_posts',   fetch_reddit_posts),
         ('fetch_earnings',       run_fetch_earnings),
         ('daily_report',         run_daily_report),
         ('paper_trader',         run_paper_trader),

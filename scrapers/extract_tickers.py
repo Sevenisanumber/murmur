@@ -107,6 +107,33 @@ def run_extraction(db_path: str = DB_PATH) -> tuple[int, int]:
     return total_posts, total_mentions
 
 
+def run_extraction_for_posts(conn: sqlite3.Connection, post_ids: list[str]) -> int:
+    """Extract tickers from a specific list of post_ids. Returns total mention count inserted."""
+    valid_tickers = set(
+        r[0] for r in conn.execute('SELECT ticker FROM tickers WHERE is_ambiguous=0')
+    )
+    if not valid_tickers:
+        log.error('No tickers in DB. Run scrapers/load_tickers.py first.')
+        return 0
+
+    placeholders = ','.join('?' * len(post_ids))
+    rows = conn.execute(
+        f'SELECT post_id, title, body FROM posts WHERE post_id IN ({placeholders})',
+        post_ids,
+    ).fetchall()
+
+    batch = []
+    for post_id, title, body in rows:
+        text = ' '.join(filter(None, [title, body]))
+        for ticker, (count, ctx) in extract_from_text(text, valid_tickers).items():
+            batch.append((post_id, ticker, count, 'regex', ctx))
+
+    if batch:
+        _flush(conn, batch)
+
+    return len(batch)
+
+
 def _flush(conn: sqlite3.Connection, batch: list):
     conn.executemany(
         """INSERT OR IGNORE INTO post_tickers

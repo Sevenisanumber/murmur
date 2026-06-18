@@ -30,6 +30,7 @@ import urllib.request
 
 ROOT       = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH    = os.path.join(ROOT, 'data', 'wsb.db')
+LOCK_PATH  = '/tmp/murmur_classify.lock'
 LOG_PATH   = os.path.join(ROOT, 'logs', 'classify_posts.log')
 OLLAMA_URL = 'http://localhost:11434/api/generate'
 MODEL      = 'mistral'
@@ -364,6 +365,64 @@ def run(test_mode=False, batch_size=50, year=None, limit=None, priority=False):
     conn.close()
 
 
+def run_for_post_ids(post_ids: list[str], batch_size: int = 50) -> None:
+    """Classify a specific set of post_ids. Skips posts already classified or without tickers."""
+    if not check_ollama():
+        log.error(
+            "Ollama is not running. Start it with:\n"
+            "  OLLAMA_MODELS=/mnt/ollama/models ollama serve"
+        )
+        return
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute('PRAGMA journal_mode=WAL')
+    add_classification_column(conn)
+
+    placeholders = ','.join('?' * len(post_ids))
+    posts = conn.execute(
+        f"""SELECT p.post_id, p.title, p.body FROM posts p
+            WHERE p.post_id IN ({placeholders})
+              AND p.classification IS NULL
+              AND EXISTS (SELECT 1 FROM post_tickers pt WHERE pt.post_id = p.post_id)""",
+        post_ids,
+    ).fetchall()
+
+    if not posts:
+        log.info(f'[POST-IDS] No unclassified posts with tickers among {len(post_ids)} IDs — nothing to do')
+        conn.close()
+        return
+
+    log.info(f'[POST-IDS] Classifying {len(posts)} of {len(post_ids)} posts')
+
+    classified = 0
+    failed = 0
+    label_counts: dict[str, int] = {}
+    pending = []
+
+    for done, (post_id, title, body) in enumerate(posts, start=1):
+        label, is_bullish = classify_post(title, body)
+        if label is not None:
+            pending.append((label, is_bullish, post_id))
+            classified += 1
+            label_counts[label] = label_counts.get(label, 0) + 1
+        else:
+            failed += 1
+
+        if done % batch_size == 0 or done == len(posts):
+            conn.executemany(
+                "UPDATE posts SET classification=?, is_bullish=? WHERE post_id=?",
+                pending,
+            )
+            conn.commit()
+            pending.clear()
+
+    log.info(
+        f'[POST-IDS] Done. classified={classified} failed={failed} | '
+        + ' '.join(f'{k}:{v}' for k, v in sorted(label_counts.items()) if v > 0)
+    )
+    conn.close()
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Classify WSB posts via Mistral/Ollama')
     parser.add_argument('--test', action='store_true', help='Run on first 100 unclassified posts only')
@@ -375,11 +434,34 @@ if __name__ == '__main__':
                         help='Process posts ordered by score DESC (most-upvoted first)')
     parser.add_argument('--limit', type=int, default=None, metavar='N',
                         help='Cap the run at N posts (default: all unclassified)')
+    parser.add_argument('--post-ids', type=str, default=None, metavar='IDS',
+                        help='Comma-separated post_ids to classify (skips all other filters)')
     args = parser.parse_args()
-    run(
-        test_mode=args.test,
-        batch_size=args.batch_size,
-        year=args.year,
-        limit=args.limit,
-        priority=args.priority_unclassified,
-    )
+
+    # Acquire lock file — prevent overlapping classification runs
+    try:
+        with open(LOCK_PATH, 'x') as f:
+            f.write(str(os.getpid()))
+    except FileExistsError:
+        log.warning(f'Lock file exists ({LOCK_PATH}) — another classify_posts.py is already running, exiting')
+        sys.exit(0)
+
+    try:
+        if args.post_ids:
+            run_for_post_ids(
+                post_ids=args.post_ids.split(','),
+                batch_size=args.batch_size,
+            )
+        else:
+            run(
+                test_mode=args.test,
+                batch_size=args.batch_size,
+                year=args.year,
+                limit=args.limit,
+                priority=args.priority_unclassified,
+            )
+    finally:
+        try:
+            os.unlink(LOCK_PATH)
+        except OSError:
+            pass
