@@ -55,13 +55,13 @@ log = logging.getLogger(__name__)
 
 # ── Trading constants ─────────────────────────────────────────────────────────
 
-MAX_POSITIONS      = 10      # raised for paper trading data collection
+MAX_POSITIONS      = 15      # raised for paper trading data collection
 # Future: consider Option C — dynamic position sizing that scales down to stay
-# within MAX_TOTAL_EXPOSURE as slots fill (e.g. 10 positions at $50 each = $500
+# within MAX_TOTAL_EXPOSURE as slots fill (e.g. 15 positions at $33 each = $500
 # max). Better for real money phase.
 POSITION_SIZE      = 100.0   # dollars per trade
 MAX_TOTAL_EXPOSURE = 500.0   # reference cap — not enforced in paper trading mode
-                              # (10 slots × $100 = $1000 intentionally exceeds this)
+                              # (15 slots × $100 = $1500 intentionally exceeds this)
 MIN_PRICE          = 3.0     # penny stock filter
 
 TAKE_PROFIT_PCT        = 0.15    # +15%
