@@ -10,7 +10,7 @@ Trading rules:
   SKIP: EXTREME velocity (>5x) — always
   Max 10 open positions, $100 per trade, $500 reference exposure cap
   EARNINGS_NEAR: position halved to $50 if earnings within 5 days (don't skip — size down)
-  Exit: 7 days (HOT/SQUEEZE) OR 25 days (SLOW_BURN) OR +15% profit OR -8% stop loss
+  Exit: 7 days (HOT/SQUEEZE) OR 25 days (SLOW_BURN) OR +15% profit OR -8% stop (HOT) / -15% stop (SLOW_BURN)
 
 Hard limits:
   Never trade price < $3
@@ -65,7 +65,10 @@ MAX_TOTAL_EXPOSURE = 500.0   # reference cap — not enforced in paper trading m
 MIN_PRICE          = 3.0     # penny stock filter
 
 TAKE_PROFIT_PCT        = 0.15    # +15%
-STOP_LOSS_PCT          = 0.08    # -8%
+# HOT_SCORE moves fast — tight stop is appropriate.
+# SLOW_BURN edge is at ~30 days; early noise requires room to breathe before the signal plays out.
+STOP_LOSS_HOT        = 0.08    # -8%  for HOT_SCORE / SQUEEZE_WATCH
+STOP_LOSS_SLOW_BURN  = 0.15    # -15% for SLOW_BURN
 MAX_HOLD_DAYS          = 7       # HOT / SQUEEZE_WATCH entries
 MAX_HOLD_DAYS_SLOW_BURN = 25     # SLOW_BURN entries — edge is at ~30 days
 
@@ -361,14 +364,14 @@ def check_exits(api, conn, today: str, dry_run: bool = False) -> int:
         pnl_pct    = (current_price - entry_price) / entry_price * 100
         days_held  = (datetime.strptime(today, '%Y-%m-%d')
                       - datetime.strptime(entry_date, '%Y-%m-%d')).days
-        max_hold   = (MAX_HOLD_DAYS_SLOW_BURN
-                      if pos['signal_type'] == 'SLOW_BURN'
-                      else MAX_HOLD_DAYS)
+        is_slow    = pos['signal_type'] == 'SLOW_BURN'
+        max_hold   = MAX_HOLD_DAYS_SLOW_BURN if is_slow else MAX_HOLD_DAYS
+        stop_loss  = STOP_LOSS_SLOW_BURN     if is_slow else STOP_LOSS_HOT
 
         exit_reason = None
         if pnl_pct >= TAKE_PROFIT_PCT * 100:
             exit_reason = 'take_profit'
-        elif pnl_pct <= -STOP_LOSS_PCT * 100:
+        elif pnl_pct <= -stop_loss * 100:
             exit_reason = 'stop_loss'
         elif days_held >= max_hold:
             exit_reason = 'time_exit'
@@ -388,8 +391,10 @@ def check_exits(api, conn, today: str, dry_run: bool = False) -> int:
                 entry_price, shares,
             )
             sign = '+' if pnl >= 0 else ''
+            stop_pct_str = f'{stop_loss*100:.0f}%'
             log.info(
                 f'[SELL] {ticker} | reason={exit_reason} | days_held={days_held}/{max_hold} | '
+                f'stop={stop_pct_str} | '
                 f'entry=${entry_price:.2f} exit=${actual_exit_price:.2f} | '
                 f'P&L={sign}${pnl:.2f} ({sign}{pnl_pct_final:.1f}%)'
                 + (' [DRY RUN]' if dry_run else '')
@@ -404,9 +409,11 @@ def check_exits(api, conn, today: str, dry_run: bool = False) -> int:
         else:
             days_left = max_hold - days_held
             sign = '+' if pnl_pct >= 0 else ''
+            stop_pct_str = f'{stop_loss*100:.0f}%'
             log.info(
                 f'[HOLD] {ticker} | signal={pos["signal_type"]} | '
                 f'days_held={days_held}/{max_hold} ({days_left}d left) | '
+                f'stop={stop_pct_str} | '
                 f'entry=${entry_price:.2f} current=${current_price:.2f} | '
                 f'unrealized={sign}{pnl_pct:.1f}%'
             )
