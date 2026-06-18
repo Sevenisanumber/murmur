@@ -48,3 +48,22 @@ _Last updated: June 18, 2026_
 - [ ] **Real money pilot (Phase 6)** — after consistent paper trading results over a meaningful sample (suggested: 20+ closed trades, positive realized P&L). Requires separate Alpaca live account.
 - [ ] **Crypto track (Phase 7)** — separate signal pipeline for crypto via Coinbase Advanced or Kraken API. Needs its own velocity baseline and scorer calibration.
 - [ ] **Intraday entry logic (post Arctic-Shift)** — the data prerequisite for intraday entries is now partially met: Arctic-Shift pulls post text every 30 min during market hours. Build intraday entry logic once current paper trading results validate the signal over several more weeks of data.
+- [ ] **Self-adjusting parameter system (Phase 5 candidate)** — replace hardcoded trading constants with a `config.json` file that the scorer and paper trader read at runtime. The Friday weekly digest Claude analyzes outcomes and proposes parameter adjustments based on live performance data. Parameters:
+  - `slow_burn_threshold` (currently 30)
+  - `hot_score_min` (currently 70)
+  - `extreme_velocity_cutoff` (currently 5.0x)
+  - `stop_loss_slow_burn` (currently 15%)
+  - `stop_loss_hot` (currently 8%)
+  - `max_positions` (currently 15)
+
+  Human review and approval required before any changes deploy to Pi — Claude proposes, human approves, then git push.
+
+  **Prerequisites:**
+  - 30–50 closed trades per signal type for statistically meaningful adjustment (est. mid-July for SLOW_BURN)
+  - Layer 4 formal feedback loop architecture (see `MURMUR_SIGNAL_ARCHITECTURE.md`)
+  - Weekly digest continuity (prior weeks' context passed to Claude API) so adjustments build on each other over time
+
+  **Guardrails to implement:**
+  - Parameter changes bounded within safe ranges (e.g. stop loss never below 5% or above 25%)
+  - All changes logged with reasoning in a `params_history.json`
+  - Rollback mechanism if win rate drops after adjustment
