@@ -56,15 +56,17 @@ SUBREDDITS = [
     'options',
 ]
 
-USER_AGENT    = 'Murmur/1.0 WSB sentiment tracker (research project)'
+REQUEST_HEADERS = {
+    'User-Agent': 'Murmur/1.0 sentiment research bot (non-commercial)',
+}
 REQUEST_DELAY = 2   # seconds between subreddit requests to respect rate limits
 CLASSIFY_LOCK = '/tmp/murmur_classify.lock'
 
 
 def fetch_subreddit(subreddit: str) -> list[dict]:
     """Fetch up to 100 newest posts from a subreddit. Returns [] on any error."""
-    url = f'https://www.reddit.com/r/{subreddit}/new.json?limit=100'
-    req = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
+    url = f'https://old.reddit.com/r/{subreddit}/new.json?limit=100'
+    req = urllib.request.Request(url, headers=REQUEST_HEADERS)
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read())
